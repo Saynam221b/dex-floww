@@ -9,13 +9,27 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@types/dagre": "^0.7.54",
+    "@xyflow/react": "^12.10.2",
+    "clsx": "^2.1.1",
+    "dagre": "^0.8.5",
+    "framer-motion": "^12.38.0",
+    "gifshot": "^0.4.5",
+    "groq-sdk": "^1.1.2",
+    "html-to-image": "^1.11.13",
+    "lucide-react": "^1.7.0",
     "next": "16.2.2",
+    "node-sql-parser": "^5.4.0",
+    "prismjs": "^1.30.0",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "react-simple-code-editor": "^0.14.1",
+    "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/prismjs": "^1.26.6",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
