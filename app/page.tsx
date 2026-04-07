@@ -3,6 +3,7 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import SplashScreen from "@/components/SplashScreen";
+import { runParserDiagnostics } from "@/utils/testParser";
 import {
   ReactFlow,
   Background,
@@ -890,7 +891,7 @@ export default function Home() {
       {/* ════════════════════════════════════════════════════════════ */}
       {/*  FOOTER                                                      */}
       {/* ════════════════════════════════════════════════════════════ */}
-      <footer className="mt-auto border-t py-5 text-center"
+      <footer className="mt-auto border-t py-5 text-center flex flex-col items-center gap-2"
         style={{ borderColor: "rgba(255,255,255,0.05)" }}
       >
         <p className="text-xs tracking-wider text-[var(--text-muted)]">
@@ -898,6 +899,12 @@ export default function Home() {
           <span className="mx-1 opacity-30">|</span>{" "}
           <span className="hero-gradient-text text-[11px] font-bold">D3xTRverse</span>
         </p>
+        <button 
+          onClick={runParserDiagnostics}
+          className="text-[10px] text-[var(--text-muted)] opacity-20 hover:opacity-100 transition-opacity bg-transparent border-none cursor-pointer"
+        >
+          Run Diagnostics
+        </button>
       </footer>
       </motion.main>
     </>
