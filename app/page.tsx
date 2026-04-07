@@ -517,6 +517,13 @@ export default function Home() {
         setEdges(graphEdges);
         setHasResult(true);
 
+        // Auto-scroll to canvas on mobile/smaller screens to ensure visibility
+        setTimeout(() => {
+          if (window.innerWidth < 1024 && reactFlowWrapper.current) {
+            reactFlowWrapper.current.scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        }, 100);
+
         // Stage 2: Explain AST via Groq Asynchronously
         setStage("explaining");
 
@@ -660,7 +667,7 @@ export default function Home() {
               </div>
 
               <div className="relative group">
-                <div className="overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] focus-within:border-[var(--border-accent)] transition-all duration-300">
+                <div className="overflow-y-auto max-h-[40vh] rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] focus-within:border-[var(--border-accent)] transition-all duration-300">
                   <Editor
                     value={sql}
                     onValueChange={(code) => {
@@ -738,7 +745,7 @@ export default function Home() {
           </div>
 
           {/* ── Right: React Flow Canvas ── */}
-          <div className="w-full flex-1 min-h-[50vh] md:min-h-[70vh] flex flex-col relative">
+          <div className="w-full flex-1 flex flex-col relative" id="flow-canvas-container">
             {/* Recording Overlay */}
             {isRecording && (
               <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm transition-all duration-300 rounded-2xl">
@@ -831,11 +838,10 @@ export default function Home() {
             {hasResult ? (
               <div
                 ref={reactFlowWrapper}
-                className="h-full w-full flex-1 overflow-hidden rounded-2xl border relative"
+                className="w-full h-[65vh] min-h-[500px] md:h-auto md:flex-1 relative border rounded-2xl overflow-hidden flex flex-col"
                 style={{
                   borderColor: "var(--border-accent)",
                   background: "var(--bg-secondary)",
-                  minHeight: 500,
                 }}
               >
                 <ReactFlow
@@ -847,23 +853,24 @@ export default function Home() {
                   proOptions={proOptions}
                   connectionLineType={ConnectionLineType.SmoothStep}
                   fitView
-                  fitViewOptions={{ padding: 0.35, maxZoom: 1 }}
+                  fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
                   minZoom={0.1}
                   maxZoom={2}
                   panOnScroll={true}
+                  preventScrolling={false} // Allow natural page scrolling over canvas on mobile
                   zoomOnScroll={false}
                   zoomOnPinch={true}
                   zoomOnDoubleClick={false}
                 >
                   <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#333" />
                   <Controls className="dark:bg-gray-800 dark:border-gray-700 dark:fill-white" />
-                  <MiniMap className="dark:bg-gray-900" nodeColor="#4f46e5" />
+                  <MiniMap className="hidden md:block dark:bg-gray-900" nodeColor="#4f46e5" />
                 </ReactFlow>
               </div>
             ) : (
               <div
                 id="canvas-placeholder"
-                className="flex h-full min-h-[50vh] md:min-h-[70vh] items-center justify-center rounded-2xl border-2 border-dashed transition-colors duration-300"
+                className="flex w-full h-[65vh] min-h-[500px] md:h-auto md:flex-1 items-center justify-center rounded-2xl border-2 border-dashed transition-colors duration-300"
                 style={{
                   borderColor: "var(--border-subtle)",
                   background: "var(--bg-secondary)",
