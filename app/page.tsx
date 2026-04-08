@@ -465,6 +465,9 @@ function FlowApp() {
 
   /* ---- URL Sync — lz-string compression (runs ONCE on mount) ---- */
   const hasLoadedUrl = useRef(false);
+  // When true, handleVisualize will NOT re-inject the ?q= param.
+  // This breaks the iOS Safari crash loop: load → strip → re-inject → reload.
+  const isUrlTriggered = useRef(false);
   useEffect(() => {
     if (hasLoadedUrl.current) return;
     hasLoadedUrl.current = true;
@@ -484,6 +487,9 @@ function FlowApp() {
 
       setSql(decoded);
       setChaosCleared(true);
+
+      // Flag so handleVisualize skips URL re-injection
+      isUrlTriggered.current = true;
 
       // Defer visualization to next tick so state is settled
       setTimeout(() => handleVisualize(decoded), 100);
@@ -715,11 +721,17 @@ function FlowApp() {
       // Update URL for sharing using NATIVE browser API only.
       // Never use Next.js router.push/replace — it triggers a full
       // re-render cycle that causes infinite loops on iOS Safari.
-      try {
-        const compressed = LZString.compressToEncodedURIComponent(query);
-        window.history.replaceState(null, '', `?q=${compressed}`);
-      } catch {
-        // Silently fail — URL sharing is non-critical
+      // SKIP when triggered by URL load — the param was already stripped
+      // and re-injecting it causes the Safari crash loop.
+      if (isUrlTriggered.current) {
+        isUrlTriggered.current = false;
+      } else {
+        try {
+          const compressed = LZString.compressToEncodedURIComponent(query);
+          window.history.replaceState(null, '', `?q=${compressed}`);
+        } catch {
+          // Silently fail — URL sharing is non-critical
+        }
       }
 
       setLoading(true);
