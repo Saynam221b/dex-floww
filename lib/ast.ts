@@ -193,7 +193,11 @@ export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, an
        let uIndex = 1;
        while(curr) {
           nodes[`node_union_${uIndex}`] = `UNION`;
-          const subNodes = flattenAstToNodeMap(curr);
+          // Prevent O(N!) explosion: don't let the recursive call process the rest of the chain
+          const currClone = { ...curr };
+          delete currClone._next; 
+          
+          const subNodes = flattenAstToNodeMap(currClone);
           for (const key in subNodes) {
              nodes[`${key}_u${uIndex}`] = subNodes[key];
           }
