@@ -1,0 +1,16 @@
+{
+  "name": "D3xTRverse Flow",
+  "short_name": "D3xTR Flow",
+  "description": "Instantly visualize and decode complex SQL pipelines into interactive DAG flowcharts.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050507",
+  "theme_color": "#4f46e5",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

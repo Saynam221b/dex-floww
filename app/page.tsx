@@ -11,6 +11,9 @@ import {
   MiniMap,
   useNodesState,
   useEdgesState,
+  useReactFlow,
+  getNodesBounds,
+  getViewportForBounds,
   type Node,
   type Edge,
   BackgroundVariant,
@@ -32,11 +35,12 @@ import {
   Share2,
   ChevronDown,
   Image as ImageIcon,
-  Video,
   Box,
   User,
+  Terminal,
   MessageSquare,
-  X
+  X,
+  ExternalLink,
 } from "lucide-react";
 import SqlNodeComponent, { type SqlNodeData } from "@/components/SqlNode";
 import { getLayoutedElements } from "@/utils/layout";
@@ -67,6 +71,7 @@ const LAYER_ORDER: Record<string, number> = {
   select: 5,
   orderby: 6,
   limit: 7,
+  union: 8,
 };
 
 const LAYER_LABELS: Record<string, string> = {
@@ -78,6 +83,7 @@ const LAYER_LABELS: Record<string, string> = {
   select: "SELECT",
   orderby: "ORDER BY",
   limit: "LIMIT",
+  union: "UNION",
 };
 
 /* ------------------------------------------------------------------ */
@@ -93,6 +99,7 @@ const EDGE_COLORS: Record<string, string> = {
   having: "#fb923c",
   orderby: "#818cf8",
   limit: "#c084fc",
+  union: "#f97316",
 };
 
 /* ------------------------------------------------------------------ */
@@ -100,14 +107,17 @@ const EDGE_COLORS: Record<string, string> = {
 /* ------------------------------------------------------------------ */
 
 function detectNodeType(key: string): string {
-  if (key.startsWith("node_from")) return "from";
-  if (key.startsWith("node_join")) return "join";
-  if (key.startsWith("node_where")) return "where";
-  if (key.startsWith("node_groupby")) return "groupby";
-  if (key.startsWith("node_having")) return "having";
-  if (key.startsWith("node_select")) return "select";
-  if (key.startsWith("node_orderby")) return "orderby";
-  if (key.startsWith("node_limit")) return "limit";
+  // Strip UNION sub-query suffix like _u1, _u2 for type detection
+  const normalized = key.replace(/_u\d+$/, "");
+  if (normalized.startsWith("node_from")) return "from";
+  if (normalized.startsWith("node_join")) return "join";
+  if (normalized.startsWith("node_where")) return "where";
+  if (normalized.startsWith("node_groupby")) return "groupby";
+  if (normalized.startsWith("node_having")) return "having";
+  if (normalized.startsWith("node_select")) return "select";
+  if (normalized.startsWith("node_orderby")) return "orderby";
+  if (normalized.startsWith("node_limit")) return "limit";
+  if (normalized.startsWith("node_union")) return "union";
   return "unknown";
 }
 
@@ -242,7 +252,7 @@ function transformToGraph(
 
 const nodeTypes = { sqlNode: SqlNodeComponent };
 
-export default function Home() {
+function FlowApp() {
   const [sql, setSql] = useState("");
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState<"idle" | "parsing" | "explaining" | "rendering">("idle");
@@ -250,9 +260,9 @@ export default function Home() {
   const [hasResult, setHasResult] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordingProgress, setRecordingProgress] = useState(0);
+  const [showCreatorModal, setShowCreatorModal] = useState(false);
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
+  const { getNodes } = useReactFlow();
 
   /* ---- Splash Screen ---- */
   const [showSplash, setShowSplash] = useState(true);
@@ -369,110 +379,74 @@ export default function Home() {
     setEdges(layoutedEdges);
   }, [setNodes, setEdges, handleExpandToggle, handleHeightReport]);
 
-  /* ---- Image & GIF Export ---- */
+  /* ---- Full-Canvas Export (Dagre-aware) ---- */
   const handleDownloadPNG = useCallback(() => {
     if (reactFlowWrapper.current === null) return;
     setExportMenuOpen(false);
-    toPng(reactFlowWrapper.current, {
-      backgroundColor: '#0a0a0a',
+
+    const allNodes = getNodes();
+    if (allNodes.length === 0) return;
+
+    const nodeBounds = getNodesBounds(allNodes);
+    const padding = 60;
+    const imageWidth = nodeBounds.width + padding * 2;
+    const imageHeight = nodeBounds.height + padding * 2;
+    const viewport = getViewportForBounds(nodeBounds, imageWidth, imageHeight, 0.5, 2, padding);
+
+    const flowViewport = reactFlowWrapper.current.querySelector('.react-flow__viewport') as HTMLElement;
+    if (!flowViewport) return;
+
+    toPng(flowViewport, {
+      backgroundColor: '#0f172a',
+      width: imageWidth,
+      height: imageHeight,
       quality: 1,
-      pixelRatio: 2 // Max quality for static image
+      pixelRatio: 2,
+      style: {
+        width: `${imageWidth}px`,
+        height: `${imageHeight}px`,
+        transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
+      },
     }).then((dataUrl) => {
       const a = document.createElement('a');
       a.setAttribute('download', 'sql-flow-visualization.png');
       a.setAttribute('href', dataUrl);
       a.click();
     });
-  }, []);
+  }, [getNodes]);
 
   const handleDownloadSVG = useCallback(() => {
     if (reactFlowWrapper.current === null) return;
     setExportMenuOpen(false);
-    toSvg(reactFlowWrapper.current, {
-      backgroundColor: '#0a0a0a',
+
+    const allNodes = getNodes();
+    if (allNodes.length === 0) return;
+
+    const nodeBounds = getNodesBounds(allNodes);
+    const padding = 60;
+    const imageWidth = nodeBounds.width + padding * 2;
+    const imageHeight = nodeBounds.height + padding * 2;
+    const viewport = getViewportForBounds(nodeBounds, imageWidth, imageHeight, 0.5, 2, padding);
+
+    const flowViewport = reactFlowWrapper.current.querySelector('.react-flow__viewport') as HTMLElement;
+    if (!flowViewport) return;
+
+    toSvg(flowViewport, {
+      backgroundColor: '#0f172a',
+      width: imageWidth,
+      height: imageHeight,
+      style: {
+        width: `${imageWidth}px`,
+        height: `${imageHeight}px`,
+        transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
+      },
     }).then((dataUrl) => {
       const a = document.createElement('a');
       a.setAttribute('download', 'sql-flow-visualization.svg');
       a.setAttribute('href', dataUrl);
       a.click();
     });
-  }, []);
-
-  const handleRecordGif = useCallback(async () => {
-    if (reactFlowWrapper.current === null) return;
-    setExportMenuOpen(false);
-
-    // 1. Collapse all to start at beginning
-    handleToggleAll(false);
-
-    // Give it a brief moment to collapse
-    await new Promise(r => setTimeout(r, 400));
-
-    setIsRecording(true);
-    setRecordingProgress(0);
-
-    // 2. Programmatically trigger the expand
-    handleToggleAll(true);
-
-    const captureFrames = async () => {
-      const frames: string[] = [];
-      const maxFrames = 25; // 2.5 seconds at 10fps
-
-      for (let i = 0; i < maxFrames; i++) {
-        if (!reactFlowWrapper.current) break;
-        try {
-          const dataUrl = await toPng(reactFlowWrapper.current, {
-            backgroundColor: '#0a0a0a',
-            quality: 0.8, // 80% to keep gif size reasonable
-            pixelRatio: 1.5,
-          });
-          frames.push(dataUrl);
-          setRecordingProgress(Math.floor(((i + 1) / maxFrames) * 50)); // first 50% is capture
-        } catch (err) {
-          console.error("Capture failed", err);
-          break;
-        }
-        // Wait ~60-80ms to get roughly 10fps plus the time `toPng` took
-        await new Promise(r => setTimeout(r, 60));
-      }
-
-      if (frames.length === 0) {
-        setIsRecording(false);
-        return;
-      }
-
-      // 4. Encode GIF
-      import('gifshot').then((gifshotModule) => {
-        const gifshot = gifshotModule.default || gifshotModule;
-        let currentProgress = 50;
-        gifshot.createGIF({
-          images: frames,
-          gifWidth: reactFlowWrapper.current?.clientWidth || 800,
-          gifHeight: reactFlowWrapper.current?.clientHeight || 600,
-          frameDuration: 1, // 10 = 1 sec, so 1 = 100ms
-          sampleInterval: 12,
-          progressCallback: (captureProgress: number) => {
-            // cap progress to 50-99
-            currentProgress = Math.max(currentProgress, Math.floor(50 + (captureProgress * 49)));
-            setRecordingProgress(currentProgress);
-          }
-        }, (obj) => {
-          setIsRecording(false);
-          setRecordingProgress(0);
-          if (!obj.error) {
-            const a = document.createElement('a');
-            a.setAttribute('download', 'sql-flow-animation.gif');
-            a.setAttribute('href', obj.image);
-            a.click();
-          } else {
-            console.error("GIF Error:", obj.errorMsg);
-          }
-        });
-      });
-    };
-
-    captureFrames();
-  }, [handleToggleAll]);
+  }, [getNodes]);
 
   /* ---- Share Link ---- */
   const handleShare = useCallback(() => {
@@ -626,33 +600,138 @@ export default function Home() {
         animate={{ opacity: showSplash ? 0 : 1 }}
         transition={{ duration: 0.6, ease: "easeOut" }}
       >
-        {/* ── Top Navigation / Header ── */}
-        <motion.div
-          className="absolute top-4 right-4 z-50 md:top-6 md:right-8"
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 2.8, duration: 0.6, ease: "easeOut" }}
-        >
-          <motion.a
-            href="https://saynam-portfolio-19qy.vercel.app/"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="group flex items-center justify-center gap-3 rounded-full border border-indigo-400/60 bg-[#12141e]/80 p-3 shadow-[0_0_20px_rgba(99,102,241,0.35)] backdrop-blur-xl transition-all duration-300 hover:border-indigo-300 hover:bg-[#12141e] md:px-7 md:py-3.5"
-            whileHover={{ scale: 1.05, boxShadow: "0 0 45px rgba(129,140,248,0.8)" }}
-            whileTap={{ scale: 0.95 }}
-            animate={{
-              boxShadow: ["0 0 20px rgba(99,102,241,0.35)", "0 0 35px rgba(99,102,241,0.6)", "0 0 20px rgba(99,102,241,0.35)"]
+        {/* ── Top Nav Bar ── */}
+        <nav className="flex w-full items-center justify-end px-4 pt-4 md:px-8 md:pt-6">
+          <motion.button
+            onClick={() => setShowCreatorModal(true)}
+            className="flex items-center gap-2 rounded-full border border-indigo-400/50 px-4 py-2 text-xs font-bold uppercase tracking-widest text-indigo-100 cursor-pointer backdrop-blur-xl md:px-5 md:py-2.5"
+            style={{
+              background: "rgba(18,20,30,0.85)",
+              boxShadow: "0 0 20px rgba(99,102,241,0.25)",
             }}
-            transition={{
-              boxShadow: { duration: 3, repeat: Infinity, ease: "easeInOut" }
-            }}
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 2.8, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+            whileHover={{ scale: 1.05, boxShadow: "0 0 30px rgba(99,102,241,0.45)" }}
+            whileTap={{ scale: 0.96 }}
           >
-            <User className="h-5 w-5 text-indigo-300 transition-all duration-300 group-hover:text-white group-hover:drop-shadow-[0_0_10px_rgba(255,255,255,0.8)]" />
-            <span className="hidden text-sm font-extrabold uppercase tracking-widest text-indigo-100 transition-all duration-300 group-hover:text-white group-hover:drop-shadow-[0_0_10px_rgba(255,255,255,0.8)] md:block">
-              Meet the Creator
-            </span>
-          </motion.a>
-        </motion.div>
+            <User className="h-4 w-4 text-indigo-300" />
+            <span className="hidden md:inline">Meet the Creator</span>
+          </motion.button>
+        </nav>
+
+        {/* ── Creator Modal Overlay ── */}
+        <AnimatePresence>
+          {showCreatorModal && (
+            <motion.div
+              className="fixed inset-0 z-[100] flex items-center justify-center p-4"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.25 }}
+            >
+              {/* Backdrop */}
+              <motion.div
+                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+                onClick={() => setShowCreatorModal(false)}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+              />
+
+              {/* Card */}
+              <motion.div
+                className="relative w-full max-w-sm overflow-hidden rounded-2xl border border-indigo-400/40"
+                style={{
+                  background: "rgba(18,20,30,0.95)",
+                  backdropFilter: "blur(24px)",
+                  boxShadow: "0 0 80px rgba(99,102,241,0.3), 0 8px 32px rgba(0,0,0,0.6)",
+                }}
+                initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                transition={{ type: "spring", stiffness: 400, damping: 30 }}
+              >
+                {/* Decorative orbs */}
+                <div className="pointer-events-none absolute -top-10 -left-10 h-32 w-32 rounded-full bg-indigo-600/20 blur-3xl" />
+                <div className="pointer-events-none absolute -bottom-10 -right-10 h-28 w-28 rounded-full bg-violet-600/15 blur-3xl" />
+
+                {/* Close button */}
+                <button
+                  onClick={() => setShowCreatorModal(false)}
+                  className="absolute top-3 right-3 z-10 flex h-8 w-8 items-center justify-center rounded-full text-indigo-300 transition-colors hover:bg-white/10 hover:text-white cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+
+                {/* Terminal header */}
+                <motion.div
+                  className="flex items-center gap-2.5 px-5 pt-5 pb-2"
+                  initial={{ opacity: 0, x: -12 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: 0.1, duration: 0.35 }}
+                >
+                  <Terminal className="h-4 w-4 text-indigo-400" />
+                  <span className="font-mono text-[11px] tracking-wider text-indigo-300/80">
+                    ~/saynam<span className="animate-pulse text-indigo-400">_</span>
+                  </span>
+                </motion.div>
+
+                {/* Title */}
+                <motion.h3
+                  className="px-5 pb-1 text-lg font-extrabold tracking-tight text-white"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.15, duration: 0.35 }}
+                >
+                  Built by <span className="hero-gradient-text">Saynam</span>
+                </motion.h3>
+
+                {/* Body */}
+                <motion.p
+                  className="px-5 pb-4 text-[13px] leading-relaxed text-gray-400"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.2, duration: 0.35 }}
+                >
+                  From chaotic SQL strings to clear, actionable DAGs. I build tools that make data engineers{" "}
+                  <span className="font-semibold text-white">unstoppable</span>.
+                </motion.p>
+
+                {/* Separator */}
+                <div className="mx-5 h-px bg-gradient-to-r from-transparent via-indigo-500/30 to-transparent" />
+
+                {/* CTA */}
+                <motion.div
+                  className="p-4"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.25, duration: 0.35 }}
+                >
+                  <motion.a
+                    href="https://saynam-portfolio-19qy.vercel.app/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="group/cta relative flex w-full items-center justify-center gap-2.5 overflow-hidden rounded-xl px-4 py-3 text-xs font-bold uppercase tracking-widest text-white"
+                    style={{
+                      background: "linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)",
+                      boxShadow: "0 0 18px rgba(99,102,241,0.35), 0 2px 12px rgba(0,0,0,0.3)",
+                    }}
+                    whileHover={{
+                      scale: 1.04,
+                      boxShadow: "0 0 40px rgba(129,140,248,0.7), 0 4px 24px rgba(0,0,0,0.4)",
+                    }}
+                    whileTap={{ scale: 0.97 }}
+                  >
+                    <div className="absolute inset-0 -translate-x-full animate-[shimmer_3s_infinite] bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+                    <ExternalLink size={14} className="relative z-10" />
+                    <span className="relative z-10">Visit Portfolio</span>
+                  </motion.a>
+                </motion.div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* ════════════════════════════════════════════════════════════ */}
         {/*  HERO SECTION                                               */}
@@ -802,32 +881,7 @@ export default function Home() {
 
             {/* ── Right: React Flow Canvas ── */}
             <div className="w-full flex-1 flex flex-col relative" id="flow-canvas-container">
-              {/* Recording Overlay */}
-              {isRecording && (
-                <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm transition-all duration-300 rounded-2xl">
-                  <div className="flex flex-col items-center gap-4 rounded-2xl border border-[rgba(255,255,255,0.1)] bg-[rgba(18,20,30,0.8)] p-8 shadow-2xl">
-                    <div className="relative flex h-12 w-12 items-center justify-center rounded-full bg-indigo-500/20">
-                      <div className="absolute h-full w-full animate-ping rounded-full bg-indigo-500/40" />
-                      <Video size={24} className="text-indigo-400" />
-                    </div>
-                    <div className="text-center">
-                      <h3 className="text-sm font-semibold text-white tracking-widest uppercase">
-                        {recordingProgress < 50 ? "Capturing Frames" : "Encoding GIF"}
-                      </h3>
-                      <p className="mt-2 text-xs text-indigo-200/60 font-mono">
-                        {recordingProgress}%
-                      </p>
-                    </div>
-                    {/* Custom progress bar */}
-                    <div className="h-1.5 w-48 overflow-hidden rounded-full bg-gray-800">
-                      <div
-                        className="h-full bg-indigo-500 transition-all duration-150 ease-out"
-                        style={{ width: `${recordingProgress}%` }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
+
 
               {hasResult && (
                 <div className="absolute top-4 right-4 z-10 flex gap-2">
@@ -877,13 +931,6 @@ export default function Home() {
                           className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-white text-left"
                         >
                           <Box size={14} /> Vector SVG
-                        </button>
-                        <div className="my-1 border-t border-[rgba(255,255,255,0.06)]" />
-                        <button
-                          onClick={handleRecordGif}
-                          className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:bg-[rgba(99,102,241,0.15)] hover:text-[var(--accent-indigo)] text-left"
-                        >
-                          <Video size={14} /> Record Animated GIF
                         </button>
                       </div>
                     )}
@@ -978,6 +1025,8 @@ export default function Home() {
           </button>
         </footer>
 
+
+
         {/* ════════════════════════════════════════════════════════════ */}
         {/*  EASTER EGG: Floating Chat Button & Modal                    */}
         {/* ════════════════════════════════════════════════════════════ */}
@@ -1028,7 +1077,7 @@ export default function Home() {
                   </div>
 
                   <p className="mb-4 text-sm leading-relaxed text-gray-300">
-                    Look bestie, I'd <em>love</em> to have a deep, philosophical debate about your questionable <code className="bg-black/30 px-1 py-0.5 rounded text-indigo-300 text-xs font-mono">LEFT JOIN</code> logic 🤓, but AI Chat tokens cost actual money 💸 and this is just a portfolio project!
+                    Look bestie, I&apos;d <em>love</em> to have a deep, philosophical debate about your questionable <code className="bg-black/30 px-1 py-0.5 rounded text-indigo-300 text-xs font-mono">LEFT JOIN</code> logic 🤓, but AI Chat tokens cost actual money 💸 and this is just a portfolio project!
                   </p>
 
                   <p className="mb-6 text-xs text-gray-400 italic">
@@ -1048,5 +1097,18 @@ export default function Home() {
         </AnimatePresence>
       </motion.main>
     </>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Wrapper: ReactFlowProvider needed for useReactFlow() hook          */
+/* ------------------------------------------------------------------ */
+import { ReactFlowProvider } from "@xyflow/react";
+
+export default function Home() {
+  return (
+    <ReactFlowProvider>
+      <FlowApp />
+    </ReactFlowProvider>
   );
 }

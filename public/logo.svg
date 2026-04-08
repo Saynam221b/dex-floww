@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#4f46e5"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+    <linearGradient id="flow" x1="128" y1="128" x2="400" y2="400" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#e0e7ff"/>
+      <stop offset="100%" stop-color="#c4b5fd"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <!-- Background rounded square -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- Inner glow ring -->
+  <rect x="32" y="32" width="448" height="448" rx="88" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="2"/>
+  <!-- Flow nodes and connections -->
+  <g filter="url(#glow)">
+    <!-- Connection lines -->
+    <path d="M256 180 L160 280" stroke="url(#flow)" stroke-width="3.5" stroke-linecap="round" opacity="0.7"/>
+    <path d="M256 180 L352 280" stroke="url(#flow)" stroke-width="3.5" stroke-linecap="round" opacity="0.7"/>
+    <path d="M160 280 L256 370" stroke="url(#flow)" stroke-width="3.5" stroke-linecap="round" opacity="0.7"/>
+    <path d="M352 280 L256 370" stroke="url(#flow)" stroke-width="3.5" stroke-linecap="round" opacity="0.7"/>
+    <!-- Top node (diamond = SQL source) -->
+    <g transform="translate(256,170)">
+      <rect x="-28" y="-28" width="56" height="56" rx="12" fill="rgba(255,255,255,0.95)" transform="rotate(45)"/>
+      <text x="0" y="6" text-anchor="middle" font-family="system-ui,sans-serif" font-size="26" font-weight="800" fill="#4f46e5">D</text>
+    </g>
+    <!-- Left node -->
+    <circle cx="160" cy="280" r="32" fill="rgba(255,255,255,0.2)" stroke="rgba(255,255,255,0.6)" stroke-width="2.5"/>
+    <text x="160" y="287" text-anchor="middle" font-family="system-ui,sans-serif" font-size="20" font-weight="700" fill="white">F</text>
+    <!-- Right node -->
+    <circle cx="352" cy="280" r="32" fill="rgba(255,255,255,0.2)" stroke="rgba(255,255,255,0.6)" stroke-width="2.5"/>
+    <text x="352" y="287" text-anchor="middle" font-family="system-ui,sans-serif" font-size="20" font-weight="700" fill="white">3</text>
+    <!-- Bottom node -->
+    <rect x="224" y="340" width="64" height="56" rx="14" fill="rgba(255,255,255,0.2)" stroke="rgba(255,255,255,0.6)" stroke-width="2.5"/>
+    <text x="256" y="375" text-anchor="middle" font-family="system-ui,sans-serif" font-size="20" font-weight="700" fill="white">X</text>
+  </g>
+</svg>

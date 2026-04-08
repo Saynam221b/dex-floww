@@ -17,6 +17,7 @@ import {
   Sparkles,
   BrainCircuit,
   Lightbulb,
+  Layers,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -100,6 +101,12 @@ const TYPE_CONFIG: Record<
     accent: "#c084fc",
     glow: "rgba(192,132,252,0.30)",
     gradientTo: "#a855f7",
+  },
+  union: {
+    icon: Layers,
+    accent: "#f97316",
+    glow: "rgba(249,115,22,0.30)",
+    gradientTo: "#ea580c",
   },
 };
 
