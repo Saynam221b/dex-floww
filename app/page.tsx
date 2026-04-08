@@ -601,10 +601,10 @@ function FlowApp() {
         transition={{ duration: 0.6, ease: "easeOut" }}
       >
         {/* ── Top Nav Bar ── */}
-        <nav className="flex w-full items-center justify-end px-4 pt-4 md:px-8 md:pt-6">
+        <nav className="flex w-full items-center justify-center sm:justify-end px-4 pt-6 sm:pt-4 md:px-8 md:pt-6">
           <motion.button
             onClick={() => setShowCreatorModal(true)}
-            className="flex items-center gap-2 rounded-full border border-indigo-400/50 px-4 py-2 text-xs font-bold uppercase tracking-widest text-indigo-100 cursor-pointer backdrop-blur-xl md:px-5 md:py-2.5"
+            className="flex items-center gap-2 rounded-full border border-indigo-400/50 px-5 py-2.5 text-[11px] sm:text-xs font-bold uppercase tracking-widest text-indigo-100 cursor-pointer backdrop-blur-xl"
             style={{
               background: "rgba(18,20,30,0.85)",
               boxShadow: "0 0 20px rgba(99,102,241,0.25)",
@@ -616,7 +616,7 @@ function FlowApp() {
             whileTap={{ scale: 0.96 }}
           >
             <User className="h-4 w-4 text-indigo-300" />
-            <span className="hidden md:inline">Meet the Creator</span>
+            <span>Meet the Creator</span>
           </motion.button>
         </nav>
 
