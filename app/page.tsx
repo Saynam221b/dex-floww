@@ -758,15 +758,36 @@ function FlowApp() {
   }, [getNodes]);
 
   /* ---- Share Link ---- */
-  const handleShare = useCallback(() => {
+  const handleShare = useCallback(async () => {
     if (!sql) return;
     const compressed = LZString.compressToEncodedURIComponent(sql);
     const url = new URL(window.location.href);
     url.searchParams.set("q", compressed);
-    // Don't replace state to avoid Safari crash with huge URLs, just copy to clipboard
-    navigator.clipboard.writeText(url.toString());
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2000);
+    const shareUrl = url.toString();
+
+    const fallbackCopy = () => {
+      navigator.clipboard.writeText(shareUrl);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    };
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: "D3xTRverse Flow",
+          text: "Check out this SQL Lineage Graph:",
+          url: shareUrl,
+        });
+        // Success case, do not copy automatically afterwards
+      } catch (err) {
+        // Fallback or user canceled
+        if (err instanceof Error && err.name !== "AbortError") {
+          fallbackCopy();
+        }
+      }
+    } else {
+      fallbackCopy();
+    }
   }, [sql]);
 
   /* ---- Main handler ---- */

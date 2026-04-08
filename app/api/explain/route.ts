@@ -5,18 +5,20 @@ const API_KEYS = [
   process.env.GROQ_API_KEY_1,
   process.env.GROQ_API_KEY_2,
   process.env.GROQ_API_KEY_3,
+  process.env.GROQ_API_KEY_4,
+  process.env.GROQ_API_KEY_5,
 ].filter(Boolean) as string[];
 
 function createClient(apiKey: string) {
   return new Groq({ apiKey });
 }
 
-const SYSTEM_PROMPT = `You are a Senior Data Engineer documenting a data pipeline. I will provide a JSON object mapping node IDs to their SQL operations and types. Return a strict JSON response with the exact same node IDs as keys. The value for each key MUST be a 1-sentence explanation of the *business purpose* of that specific operation. 
+const SYSTEM_PROMPT = `Act as Senior Data Engineer documenting a pipeline. Input: JSON mapping node IDs to SQL operations/types. Output: Strict JSON matching node IDs to 1-sentence business purpose.
 Rules:
-- For 'join' types: Explain *why* these specific datasets are being combined (e.g., 'Merging customer profiles with transaction history.').
-- For 'filter' types (WHERE/HAVING): Explain exactly *what* is being excluded and why.
-- For 'aggregate' types (GROUP BY): Explain the metric being calculated.
-- DO NOT just translate the SQL to English. Focus on the analytical intent. Output ONLY valid JSON.`;
+- join: Why combine datasets?
+- filter: What is excluded & why?
+- aggregate: What metric is calculated?
+Focus on analytical intent, not SQL translation. Format: ONLY valid JSON. Keep explanations ultra-concise (max 15 words).`;
 
 /* ------------------------------------------------------------------ */
 /*  Groq call with key rotation & deduplication                        */

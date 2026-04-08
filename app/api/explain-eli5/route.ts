@@ -5,6 +5,8 @@ const API_KEYS = [
   process.env.GROQ_API_KEY_1,
   process.env.GROQ_API_KEY_2,
   process.env.GROQ_API_KEY_3,
+  process.env.GROQ_API_KEY_4,
+  process.env.GROQ_API_KEY_5,
 ].filter(Boolean) as string[];
 
 function createClient(apiKey: string) {
@@ -12,7 +14,7 @@ function createClient(apiKey: string) {
 }
 
 const SYSTEM_PROMPT =
-  "You are an expert teacher. Take the provided SQL operation and explain it using a simple, real-world everyday analogy (like sorting toys, ordering pizza, or finding a book in a library). Break it down step-by-step so a non-technical person or a 5-year-old could understand it. Output plain text, maximum 3-4 short sentences.";
+  "Expert teacher: Explain the SQL operation using a simple real-world analogy (e.g., sorting toys, ordering pizza) for a 5-year-old. Max 3 short sentences. Plain text only. Be ultra-concise.";
 
 /* ------------------------------------------------------------------ */
 /*  Groq call with key rotation                                       */
