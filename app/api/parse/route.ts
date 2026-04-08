@@ -1,5 +1,5 @@
 import { Parser } from "node-sql-parser";
-import { flattenAstToNodeMap } from "@/lib/ast";
+import { flattenAstToNodeMap, type AstNode } from "@/lib/ast";
 
 const parser = new Parser();
 
@@ -16,7 +16,7 @@ export async function POST(request: Request) {
     }
 
     const ast = parser.astify(sql);
-    const nodeMap = flattenAstToNodeMap(ast as any);
+    const nodeMap = flattenAstToNodeMap(ast as unknown as AstNode);
 
     return Response.json({ ast, nodeMap });
   } catch (err: unknown) {

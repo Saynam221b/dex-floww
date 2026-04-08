@@ -1,5 +1,6 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Parser } from "node-sql-parser";
-import { flattenAstToNodeMap } from "@/lib/ast";
+import { flattenAstToNodeMap, type AstNode } from "@/lib/ast";
 
 const COMPLEX_QUERIES = [
   // 1. UNION with complex expressions
@@ -66,7 +67,7 @@ export function runParserDiagnostics() {
   COMPLEX_QUERIES.forEach((query, index) => {
     try {
       const ast = parser.astify(query);
-      const flattened = flattenAstToNodeMap(ast as any);
+      const flattened = flattenAstToNodeMap(ast as unknown as AstNode);
 
       // Check for raw JSON leakage
       for (const [key, value] of Object.entries(flattened)) {

@@ -33,7 +33,10 @@ import {
   ChevronDown,
   Image as ImageIcon,
   Video,
-  Box
+  Box,
+  User,
+  MessageSquare,
+  X
 } from "lucide-react";
 import SqlNodeComponent, { type SqlNodeData } from "@/components/SqlNode";
 import { getLayoutedElements } from "@/utils/layout";
@@ -151,13 +154,12 @@ LIMIT 20;`,
 
 /* ------------------------------------------------------------------ */
 /*  Transformation: nodeMap + explanations → React Flow graph          */
-/* ------------------------------------------------------------------ */
-
 function transformToGraph(
   nodeMap: NodeMap,
   explanations: Explanations,
   onExpandToggle: (nodeId: string, expanded: boolean) => void,
-  expandedNodeIds?: Set<string>
+  onHeightReport: (nodeId: string, height: number) => void,
+  nodeHeights?: Map<string, number>
 ): { nodes: Node[]; edges: Edge[] } {
   const entries = Object.entries(nodeMap);
 
@@ -194,6 +196,7 @@ function transformToGraph(
         explanation: explanations[item.key] || "Processing…",
         nodeType: layerType,
         onExpandToggle,
+        onHeightReport,
         nodeId: id,
       };
 
@@ -229,8 +232,8 @@ function transformToGraph(
     prevLayerIds = currentLayerIds;
   });
 
-  // Run dagre layout with expansion awareness
-  return getLayoutedElements(nodes, edges, "TB", expandedNodeIds);
+  // Run dagre layout with measured node heights
+  return getLayoutedElements(nodes, edges, "TB", nodeHeights);
 }
 
 /* ------------------------------------------------------------------ */
@@ -258,12 +261,16 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, []);
 
+  /* ---- Easter Egg ---- */
+  const [showEasterEgg, setShowEasterEgg] = useState(false);
+
   const [nodes, setNodes, onNodesChange] = useNodesState([] as Node[]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([] as Edge[]);
 
-  // Track which nodes are expanded and stash raw data for re-layout
-  const expandedNodeIdsRef = useRef<Set<string>>(new Set());
+  // Track measured node heights and stash raw data for re-layout
+  const nodeHeightsRef = useRef<Map<string, number>>(new Map());
   const rawDataRef = useRef<{ nodeMap: NodeMap; explanations: Explanations } | null>(null);
+  const relayoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /* ---- URL Sync ---- */
   const isInitialized = useRef(false);
@@ -281,6 +288,7 @@ export default function Home() {
       }
     }
     isInitialized.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /* ---- ReactFlow config ---- */
@@ -292,56 +300,74 @@ export default function Home() {
     setEdges([]);
     setHasResult(false);
     setError(null);
-    expandedNodeIdsRef.current = new Set();
+    nodeHeightsRef.current = new Map();
     rawDataRef.current = null;
   }, [setNodes, setEdges]);
+
+  /* ---- Debounced relayout using measured heights ---- */
+  const triggerRelayout = useCallback(() => {
+    if (relayoutTimerRef.current) clearTimeout(relayoutTimerRef.current);
+    relayoutTimerRef.current = setTimeout(() => {
+      if (!rawDataRef.current) return;
+      const { nodeMap, explanations } = rawDataRef.current;
+      const { nodes: layoutedNodes, edges: layoutedEdges } = transformToGraph(
+        nodeMap,
+        explanations,
+        handleExpandToggle,
+        handleHeightReport,
+        nodeHeightsRef.current
+      );
+      setNodes(layoutedNodes);
+      setEdges(layoutedEdges);
+    }, 80);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setNodes, setEdges]);
+
+  /* ---- Height report callback from nodes ---- */
+  const handleHeightReport = useCallback(
+    (nodeId: string, height: number) => {
+      const prev = nodeHeightsRef.current.get(nodeId);
+      if (prev !== height) {
+        nodeHeightsRef.current.set(nodeId, height);
+        triggerRelayout();
+      }
+    },
+    [triggerRelayout]
+  );
 
   /* ---- Expansion toggle callback — re-runs dagre ---- */
   const handleExpandToggle = useCallback(
     (nodeId: string, expanded: boolean) => {
-      const eSet = expandedNodeIdsRef.current;
-      if (expanded) {
-        eSet.add(nodeId);
-      } else {
-        eSet.delete(nodeId);
+      if (!expanded) {
+        // When collapsing, remove stored height so default is used
+        nodeHeightsRef.current.delete(nodeId);
       }
 
       // Re-layout using stashed raw data
-      if (rawDataRef.current) {
-        const { nodeMap, explanations } = rawDataRef.current;
-        const { nodes: layoutedNodes, edges: layoutedEdges } = transformToGraph(
-          nodeMap,
-          explanations,
-          handleExpandToggle,
-          eSet
-        );
-        setNodes(layoutedNodes);
-        setEdges(layoutedEdges);
-      }
+      triggerRelayout();
     },
-    [setNodes, setEdges]
+    [triggerRelayout]
   );
 
   /* ---- Expand / Collapse All ---- */
   const handleToggleAll = useCallback((expand: boolean) => {
     if (!rawDataRef.current) return;
-    const { nodeMap, explanations } = rawDataRef.current;
-    
-    const newSet = new Set<string>();
-    if (expand) {
-      Object.keys(nodeMap).forEach(key => newSet.add(key));
-    }
-    expandedNodeIdsRef.current = newSet;
 
+    if (!expand) {
+      nodeHeightsRef.current = new Map();
+    }
+
+    const { nodeMap, explanations } = rawDataRef.current;
     const { nodes: layoutedNodes, edges: layoutedEdges } = transformToGraph(
       nodeMap,
       explanations,
       handleExpandToggle,
-      newSet
+      handleHeightReport,
+      nodeHeightsRef.current
     );
     setNodes(layoutedNodes);
     setEdges(layoutedEdges);
-  }, [setNodes, setEdges, handleExpandToggle]);
+  }, [setNodes, setEdges, handleExpandToggle, handleHeightReport]);
 
   /* ---- Image & GIF Export ---- */
   const handleDownloadPNG = useCallback(() => {
@@ -378,20 +404,20 @@ export default function Home() {
 
     // 1. Collapse all to start at beginning
     handleToggleAll(false);
-    
+
     // Give it a brief moment to collapse
     await new Promise(r => setTimeout(r, 400));
-    
+
     setIsRecording(true);
     setRecordingProgress(0);
-    
+
     // 2. Programmatically trigger the expand
     handleToggleAll(true);
 
     const captureFrames = async () => {
       const frames: string[] = [];
       const maxFrames = 25; // 2.5 seconds at 10fps
-      
+
       for (let i = 0; i < maxFrames; i++) {
         if (!reactFlowWrapper.current) break;
         try {
@@ -426,20 +452,20 @@ export default function Home() {
           frameDuration: 1, // 10 = 1 sec, so 1 = 100ms
           sampleInterval: 12,
           progressCallback: (captureProgress: number) => {
-             // cap progress to 50-99
-             currentProgress = Math.max(currentProgress, Math.floor(50 + (captureProgress * 49)));
-             setRecordingProgress(currentProgress);
+            // cap progress to 50-99
+            currentProgress = Math.max(currentProgress, Math.floor(50 + (captureProgress * 49)));
+            setRecordingProgress(currentProgress);
           }
         }, (obj) => {
           setIsRecording(false);
           setRecordingProgress(0);
           if (!obj.error) {
-             const a = document.createElement('a');
-             a.setAttribute('download', 'sql-flow-animation.gif');
-             a.setAttribute('href', obj.image);
-             a.click();
+            const a = document.createElement('a');
+            a.setAttribute('download', 'sql-flow-animation.gif');
+            a.setAttribute('href', obj.image);
+            a.click();
           } else {
-             console.error("GIF Error:", obj.errorMsg);
+            console.error("GIF Error:", obj.errorMsg);
           }
         });
       });
@@ -478,7 +504,7 @@ export default function Home() {
       setNodes([]);
       setEdges([]);
       setHasResult(false);
-      expandedNodeIdsRef.current = new Set();
+      nodeHeightsRef.current = new Map();
 
       try {
         // Stage 1: Parse SQL → AST & NodeMap
@@ -509,7 +535,8 @@ export default function Home() {
         const { nodes: graphNodes, edges: graphEdges } = transformToGraph(
           nodeMap,
           initialExplanations,
-          handleExpandToggle
+          handleExpandToggle,
+          handleHeightReport
         );
 
         setStage("rendering");
@@ -540,7 +567,8 @@ export default function Home() {
                 nodeMap,
                 explainData.explanations,
                 handleExpandToggle,
-                expandedNodeIdsRef.current
+                handleHeightReport,
+                nodeHeightsRef.current
               );
               setNodes(updatedNodes);
               setEdges(updatedEdges);
@@ -563,7 +591,7 @@ export default function Home() {
         setStage("idle");
       }
     },
-    [sql, setNodes, setEdges, handleExpandToggle]
+    [sql, setNodes, setEdges, handleExpandToggle, handleHeightReport]
   );
 
   /* ---- Sample button handler ---- */
@@ -598,321 +626,426 @@ export default function Home() {
         animate={{ opacity: showSplash ? 0 : 1 }}
         transition={{ duration: 0.6, ease: "easeOut" }}
       >
-      {/* ════════════════════════════════════════════════════════════ */}
-      {/*  HERO SECTION                                               */}
-      {/* ════════════════════════════════════════════════════════════ */}
-      <section className="relative flex flex-col items-center px-4 pt-14 pb-8 sm:px-6 lg:px-8 md:pt-20 md:pb-12">
-        {/* Subtle radial glow behind hero */}
-        <div
-          className="pointer-events-none absolute inset-0"
-          style={{
-            background:
-              "radial-gradient(ellipse 60% 40% at 50% 0%, rgba(99,102,241,0.08) 0%, transparent 70%)",
-          }}
-        />
+        {/* ── Top Navigation / Header ── */}
+        <motion.div
+          className="absolute top-4 right-4 z-50 md:top-6 md:right-8"
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 2.8, duration: 0.6, ease: "easeOut" }}
+        >
+          <motion.a
+            href="https://saynam-portfolio-19qy.vercel.app/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="group flex items-center justify-center gap-3 rounded-full border border-indigo-400/60 bg-[#12141e]/80 p-3 shadow-[0_0_20px_rgba(99,102,241,0.35)] backdrop-blur-xl transition-all duration-300 hover:border-indigo-300 hover:bg-[#12141e] md:px-7 md:py-3.5"
+            whileHover={{ scale: 1.05, boxShadow: "0 0 45px rgba(129,140,248,0.8)" }}
+            whileTap={{ scale: 0.95 }}
+            animate={{
+              boxShadow: ["0 0 20px rgba(99,102,241,0.35)", "0 0 35px rgba(99,102,241,0.6)", "0 0 20px rgba(99,102,241,0.35)"]
+            }}
+            transition={{
+              boxShadow: { duration: 3, repeat: Infinity, ease: "easeInOut" }
+            }}
+          >
+            <User className="h-5 w-5 text-indigo-300 transition-all duration-300 group-hover:text-white group-hover:drop-shadow-[0_0_10px_rgba(255,255,255,0.8)]" />
+            <span className="hidden text-sm font-extrabold uppercase tracking-widest text-indigo-100 transition-all duration-300 group-hover:text-white group-hover:drop-shadow-[0_0_10px_rgba(255,255,255,0.8)] md:block">
+              Meet the Creator
+            </span>
+          </motion.a>
+        </motion.div>
 
-        {/* Headline */}
-        <h1 className="relative text-center text-4xl font-extrabold tracking-tight sm:text-5xl lg:text-6xl">
-          <span className="hero-gradient-text">D3xTRverse Flow</span>
-        </h1>
-        <p className="relative mt-4 max-w-xl text-center text-sm leading-relaxed text-[var(--text-secondary)] sm:text-base md:text-lg">
-          Instantly visualize and decode complex SQL pipelines.
-        </p>
+        {/* ════════════════════════════════════════════════════════════ */}
+        {/*  HERO SECTION                                               */}
+        {/* ════════════════════════════════════════════════════════════ */}
+        <section className="relative flex flex-col items-center px-4 pt-14 pb-8 sm:px-6 lg:px-8 md:pt-20 md:pb-12">
+          {/* Subtle radial glow behind hero */}
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{
+              background:
+                "radial-gradient(ellipse 60% 40% at 50% 0%, rgba(99,102,241,0.08) 0%, transparent 70%)",
+            }}
+          />
 
-        {/* Sample query buttons */}
-        <div className="relative mt-8 flex flex-wrap items-center justify-center gap-3">
-          {SAMPLE_QUERIES.map((sample) => {
-            const SIcon = sample.icon;
-            return (
-              <button
-                key={sample.label}
-                onClick={() => handleSample(sample.sql)}
-                disabled={loading}
-                className="sample-btn group flex items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed sm:text-[11px]"
+          {/* Headline */}
+          <h1 className="relative text-center text-4xl font-extrabold tracking-tight sm:text-5xl lg:text-6xl">
+            <span className="hero-gradient-text">D3xTRverse Flow</span>
+          </h1>
+          <p className="relative mt-4 max-w-xl text-center text-sm leading-relaxed text-[var(--text-secondary)] sm:text-base md:text-lg">
+            Instantly visualize and decode complex SQL pipelines.
+          </p>
+
+          {/* Sample query buttons */}
+          <div className="relative mt-8 flex flex-wrap items-center justify-center gap-3">
+            {SAMPLE_QUERIES.map((sample) => {
+              const SIcon = sample.icon;
+              return (
+                <button
+                  key={sample.label}
+                  onClick={() => handleSample(sample.sql)}
+                  disabled={loading}
+                  className="sample-btn group flex items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-semibold uppercase tracking-wider transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed sm:text-[11px]"
+                  style={{
+                    borderColor: "rgba(255,255,255,0.08)",
+                    background: "rgba(255,255,255,0.02)",
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  <SIcon size={14} className="opacity-50 transition-opacity duration-200 group-hover:opacity-100" />
+                  {sample.label}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* ════════════════════════════════════════════════════════════ */}
+        {/*  MAIN CONTENT — Editor + Canvas                             */}
+        {/* ════════════════════════════════════════════════════════════ */}
+        <section className="flex flex-1 flex-col items-center px-4 pb-6 sm:px-6 lg:px-8">
+          {/* Responsive wrapper: stack on mobile, side-by-side on desktop */}
+          <div className="flex w-full max-w-7xl flex-col gap-6 md:flex-row md:gap-8 flex-1">
+            {/* ── Left: SQL Editor Panel ── */}
+            <div className="w-full md:w-[380px] lg:w-[420px] flex-shrink-0">
+              <div className="editor-panel sticky top-6 rounded-2xl border p-5"
                 style={{
-                  borderColor: "rgba(255,255,255,0.08)",
-                  background: "rgba(255,255,255,0.02)",
-                  color: "var(--text-secondary)",
+                  borderColor: "rgba(255,255,255,0.06)",
+                  background: "rgba(18,20,30,0.7)",
+                  backdropFilter: "blur(16px)",
                 }}
               >
-                <SIcon size={14} className="opacity-50 transition-opacity duration-200 group-hover:opacity-100" />
-                {sample.label}
-              </button>
-            );
-          })}
-        </div>
-      </section>
-
-      {/* ════════════════════════════════════════════════════════════ */}
-      {/*  MAIN CONTENT — Editor + Canvas                             */}
-      {/* ════════════════════════════════════════════════════════════ */}
-      <section className="flex flex-1 flex-col items-center px-4 pb-6 sm:px-6 lg:px-8">
-        {/* Responsive wrapper: stack on mobile, side-by-side on desktop */}
-        <div className="flex w-full max-w-7xl flex-col gap-6 md:flex-row md:gap-8 flex-1">
-          {/* ── Left: SQL Editor Panel ── */}
-          <div className="w-full md:w-[380px] lg:w-[420px] flex-shrink-0">
-            <div className="editor-panel sticky top-6 rounded-2xl border p-5"
-              style={{
-                borderColor: "rgba(255,255,255,0.06)",
-                background: "rgba(18,20,30,0.7)",
-                backdropFilter: "blur(16px)",
-              }}
-            >
-              {/* Editor header */}
-              <div className="mb-4 flex items-center gap-2">
-                <Braces className="h-4 w-4 text-[var(--accent-indigo)]" />
-                <span className="text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">
-                  SQL Input
-                </span>
-              </div>
-
-              <div className="relative group">
-                <div className="overflow-y-auto max-h-[40vh] rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] focus-within:border-[var(--border-accent)] transition-all duration-300">
-                  <Editor
-                    value={sql}
-                    onValueChange={(code) => {
-                      setSql(code);
-                      if (hasResult) clearGraph();
-                    }}
-                    highlight={(code) => Prism.highlight(code, Prism.languages.sql, 'sql')}
-                    padding={16}
-                    style={{
-                      fontFamily: "var(--font-mono), monospace",
-                      fontSize: 14,
-                      lineHeight: 1.6,
-                      minHeight: 220,
-                      backgroundColor: "transparent",
-                    }}
-                    textareaClassName="focus:outline-none"
-                  />
+                {/* Editor header */}
+                <div className="mb-4 flex items-center gap-2">
+                  <Braces className="h-4 w-4 text-[var(--accent-indigo)]" />
+                  <span className="text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">
+                    SQL Input
+                  </span>
                 </div>
-                {/* Character count */}
-                <span className="absolute bottom-3 right-4 text-xs text-[var(--text-muted)] tabular-nums">
-                  {sql.length}
-                </span>
-              </div>
 
-              {/* Error banner */}
-              {error && (
-                <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-400 animate-fade-in-up">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                  <span>{error}</span>
+                <div className="relative group">
+                  <div className="overflow-y-auto max-h-[40vh] rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] focus-within:border-[var(--border-accent)] transition-all duration-300">
+                    <Editor
+                      value={sql}
+                      onValueChange={(code) => {
+                        setSql(code);
+                        if (hasResult) clearGraph();
+                      }}
+                      highlight={(code) => Prism.highlight(code, Prism.languages.sql, 'sql')}
+                      padding={16}
+                      style={{
+                        fontFamily: "var(--font-mono), monospace",
+                        fontSize: 14,
+                        lineHeight: 1.6,
+                        minHeight: 220,
+                        backgroundColor: "transparent",
+                      }}
+                      textareaClassName="focus:outline-none"
+                    />
+                  </div>
+                  {/* Character count */}
+                  <span className="absolute bottom-3 right-4 text-xs text-[var(--text-muted)] tabular-nums">
+                    {sql.length}
+                  </span>
+                </div>
+
+                {/* Error banner */}
+                {error && (
+                  <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-400 animate-fade-in-up">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>{error}</span>
+                  </div>
+                )}
+
+                {/* Action buttons */}
+                <div className="mt-4 flex gap-3">
+                  <button
+                    id="visualize-btn"
+                    onClick={() => handleVisualize()}
+                    disabled={loading || !sql.trim()}
+                    className="flex flex-1 items-center justify-center gap-2.5 rounded-xl px-5 py-3 text-sm font-semibold text-white transition-all duration-300 disabled:cursor-not-allowed disabled:opacity-40"
+                    style={{
+                      background:
+                        loading || !sql.trim()
+                          ? "var(--bg-elevated)"
+                          : "linear-gradient(135deg, var(--accent-indigo), var(--accent-violet))",
+                      boxShadow:
+                        loading || !sql.trim()
+                          ? "none"
+                          : "0 0 20px var(--glow-indigo)",
+                    }}
+                  >
+                    {loading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        {stageLabel}
+                      </>
+                    ) : (
+                      <>
+                        <Braces className="h-4 w-4" />
+                        Visualize
+                      </>
+                    )}
+                  </button>
+
+                  {hasResult && (
+                    <button
+                      onClick={clearGraph}
+                      className="flex items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-4 py-3 text-sm text-[var(--text-secondary)] transition-all duration-200 hover:border-[var(--border-accent)] hover:text-[var(--text-primary)]"
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* ── Right: React Flow Canvas ── */}
+            <div className="w-full flex-1 flex flex-col relative" id="flow-canvas-container">
+              {/* Recording Overlay */}
+              {isRecording && (
+                <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm transition-all duration-300 rounded-2xl">
+                  <div className="flex flex-col items-center gap-4 rounded-2xl border border-[rgba(255,255,255,0.1)] bg-[rgba(18,20,30,0.8)] p-8 shadow-2xl">
+                    <div className="relative flex h-12 w-12 items-center justify-center rounded-full bg-indigo-500/20">
+                      <div className="absolute h-full w-full animate-ping rounded-full bg-indigo-500/40" />
+                      <Video size={24} className="text-indigo-400" />
+                    </div>
+                    <div className="text-center">
+                      <h3 className="text-sm font-semibold text-white tracking-widest uppercase">
+                        {recordingProgress < 50 ? "Capturing Frames" : "Encoding GIF"}
+                      </h3>
+                      <p className="mt-2 text-xs text-indigo-200/60 font-mono">
+                        {recordingProgress}%
+                      </p>
+                    </div>
+                    {/* Custom progress bar */}
+                    <div className="h-1.5 w-48 overflow-hidden rounded-full bg-gray-800">
+                      <div
+                        className="h-full bg-indigo-500 transition-all duration-150 ease-out"
+                        style={{ width: `${recordingProgress}%` }}
+                      />
+                    </div>
+                  </div>
                 </div>
               )}
 
-              {/* Action buttons */}
-              <div className="mt-4 flex gap-3">
-                <button
-                  id="visualize-btn"
-                  onClick={() => handleVisualize()}
-                  disabled={loading || !sql.trim()}
-                  className="flex flex-1 items-center justify-center gap-2.5 rounded-xl px-5 py-3 text-sm font-semibold text-white transition-all duration-300 disabled:cursor-not-allowed disabled:opacity-40"
+              {hasResult && (
+                <div className="absolute top-4 right-4 z-10 flex gap-2">
+                  <button
+                    onClick={() => handleToggleAll(true)}
+                    className="p-2.5 rounded-lg bg-[rgba(18,20,30,0.8)] border border-[rgba(255,255,255,0.1)] text-gray-300 hover:text-white hover:bg-[rgba(255,255,255,0.1)] transition-colors backdrop-blur-md"
+                    title="Expand All"
+                  >
+                    <Maximize2 size={16} />
+                  </button>
+                  <button
+                    onClick={() => handleToggleAll(false)}
+                    className="p-2.5 rounded-lg bg-[rgba(18,20,30,0.8)] border border-[rgba(255,255,255,0.1)] text-gray-300 hover:text-white hover:bg-[rgba(255,255,255,0.1)] transition-colors backdrop-blur-md"
+                    title="Collapse All"
+                  >
+                    <Minimize2 size={16} />
+                  </button>
+                  <div className="w-px h-6 bg-[rgba(255,255,255,0.1)] self-center mx-1" />
+                  <button
+                    onClick={handleShare}
+                    className="p-2.5 rounded-lg bg-[rgba(18,20,30,0.8)] border border-[rgba(255,255,255,0.1)] text-gray-300 hover:text-white hover:bg-[rgba(255,255,255,0.1)] transition-colors backdrop-blur-md flex items-center gap-2"
+                    title="Share URL"
+                  >
+                    <Share2 size={16} />
+                    {copiedLink && <span className="text-[10px] font-bold tracking-wider absolute -bottom-6 left-1/2 -translate-x-1/2 text-emerald-400">COPIED</span>}
+                  </button>
+                  <div className="relative">
+                    <button
+                      onClick={() => setExportMenuOpen(!exportMenuOpen)}
+                      className="p-2.5 rounded-lg bg-[rgba(18,20,30,0.8)] border border-[rgba(255,255,255,0.1)] text-gray-300 hover:text-white hover:bg-[rgba(255,255,255,0.1)] transition-colors backdrop-blur-md flex items-center gap-1.5"
+                      title="Export Options"
+                    >
+                      <Download size={16} />
+                      <ChevronDown size={14} className="opacity-70" />
+                    </button>
+
+                    {exportMenuOpen && (
+                      <div className="absolute right-0 mt-2 w-48 rounded-xl border border-[rgba(255,255,255,0.1)] bg-[#1a1c28] p-1.5 shadow-2xl backdrop-blur-xl z-50">
+                        <button
+                          onClick={handleDownloadPNG}
+                          className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-white text-left"
+                        >
+                          <ImageIcon size={14} /> High-Res PNG
+                        </button>
+                        <button
+                          onClick={handleDownloadSVG}
+                          className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-white text-left"
+                        >
+                          <Box size={14} /> Vector SVG
+                        </button>
+                        <div className="my-1 border-t border-[rgba(255,255,255,0.06)]" />
+                        <button
+                          onClick={handleRecordGif}
+                          className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:bg-[rgba(99,102,241,0.15)] hover:text-[var(--accent-indigo)] text-left"
+                        >
+                          <Video size={14} /> Record Animated GIF
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {hasResult ? (
+                <div
+                  ref={reactFlowWrapper}
+                  className="w-full h-[65vh] min-h-[500px] md:h-auto md:flex-1 relative border rounded-2xl overflow-hidden flex flex-col"
                   style={{
-                    background:
-                      loading || !sql.trim()
-                        ? "var(--bg-elevated)"
-                        : "linear-gradient(135deg, var(--accent-indigo), var(--accent-violet))",
-                    boxShadow:
-                      loading || !sql.trim()
-                        ? "none"
-                        : "0 0 20px var(--glow-indigo)",
+                    borderColor: "var(--border-accent)",
+                    background: "var(--bg-secondary)",
                   }}
                 >
-                  {loading ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      {stageLabel}
-                    </>
-                  ) : (
-                    <>
-                      <Braces className="h-4 w-4" />
-                      Visualize
-                    </>
-                  )}
-                </button>
-
-                {hasResult && (
-                  <button
-                    onClick={clearGraph}
-                    className="flex items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-4 py-3 text-sm text-[var(--text-secondary)] transition-all duration-200 hover:border-[var(--border-accent)] hover:text-[var(--text-primary)]"
+                  <ReactFlow
+                    nodes={nodes}
+                    edges={edges}
+                    onNodesChange={onNodesChange}
+                    onEdgesChange={onEdgesChange}
+                    nodeTypes={nodeTypes}
+                    proOptions={proOptions}
+                    connectionLineType={ConnectionLineType.SmoothStep}
+                    fitView
+                    fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
+                    minZoom={0.1}
+                    maxZoom={2}
+                    panOnScroll={true}
+                    preventScrolling={false} // Allow natural page scrolling over canvas on mobile
+                    zoomOnScroll={false}
+                    zoomOnPinch={true}
+                    zoomOnDoubleClick={false}
                   >
-                    <RotateCcw className="h-4 w-4" />
-                    Clear
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* ── Right: React Flow Canvas ── */}
-          <div className="w-full flex-1 flex flex-col relative" id="flow-canvas-container">
-            {/* Recording Overlay */}
-            {isRecording && (
-              <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm transition-all duration-300 rounded-2xl">
-                <div className="flex flex-col items-center gap-4 rounded-2xl border border-[rgba(255,255,255,0.1)] bg-[rgba(18,20,30,0.8)] p-8 shadow-2xl">
-                  <div className="relative flex h-12 w-12 items-center justify-center rounded-full bg-indigo-500/20">
-                    <div className="absolute h-full w-full animate-ping rounded-full bg-indigo-500/40" />
-                    <Video size={24} className="text-indigo-400" />
-                  </div>
+                    <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#333" />
+                    <Controls className="dark:bg-gray-800 dark:border-gray-700 dark:fill-white" />
+                    <MiniMap className="hidden md:block dark:bg-gray-900" nodeColor="#4f46e5" />
+                  </ReactFlow>
+                </div>
+              ) : (
+                <div
+                  id="canvas-placeholder"
+                  className="flex w-full h-[65vh] min-h-[500px] md:h-auto md:flex-1 items-center justify-center rounded-2xl border-2 border-dashed transition-colors duration-300"
+                  style={{
+                    borderColor: "var(--border-subtle)",
+                    background: "var(--bg-secondary)",
+                  }}
+                >
                   <div className="text-center">
-                    <h3 className="text-sm font-semibold text-white tracking-widest uppercase">
-                      {recordingProgress < 50 ? "Capturing Frames" : "Encoding GIF"}
-                    </h3>
-                    <p className="mt-2 text-xs text-indigo-200/60 font-mono">
-                      {recordingProgress}%
+                    <Braces
+                      className="mx-auto mb-3 h-10 w-10"
+                      style={{ color: "var(--text-muted)" }}
+                      strokeWidth={1}
+                    />
+                    <p className="text-sm text-[var(--text-muted)]">
+                      Your query visualization will appear here
+                    </p>
+                    <p className="mt-1 text-xs text-[var(--text-muted)] opacity-60">
+                      Try a sample above or paste your own SQL
                     </p>
                   </div>
-                  {/* Custom progress bar */}
-                  <div className="h-1.5 w-48 overflow-hidden rounded-full bg-gray-800">
-                    <div 
-                      className="h-full bg-indigo-500 transition-all duration-150 ease-out"
-                      style={{ width: `${recordingProgress}%` }}
-                    />
-                  </div>
                 </div>
-              </div>
-            )}
-
-            {hasResult && (
-              <div className="absolute top-4 right-4 z-10 flex gap-2">
-                <button
-                  onClick={() => handleToggleAll(true)}
-                  className="p-2.5 rounded-lg bg-[rgba(18,20,30,0.8)] border border-[rgba(255,255,255,0.1)] text-gray-300 hover:text-white hover:bg-[rgba(255,255,255,0.1)] transition-colors backdrop-blur-md"
-                  title="Expand All"
-                >
-                  <Maximize2 size={16} />
-                </button>
-                <button
-                  onClick={() => handleToggleAll(false)}
-                  className="p-2.5 rounded-lg bg-[rgba(18,20,30,0.8)] border border-[rgba(255,255,255,0.1)] text-gray-300 hover:text-white hover:bg-[rgba(255,255,255,0.1)] transition-colors backdrop-blur-md"
-                  title="Collapse All"
-                >
-                  <Minimize2 size={16} />
-                </button>
-                <div className="w-px h-6 bg-[rgba(255,255,255,0.1)] self-center mx-1" />
-                <button
-                  onClick={handleShare}
-                  className="p-2.5 rounded-lg bg-[rgba(18,20,30,0.8)] border border-[rgba(255,255,255,0.1)] text-gray-300 hover:text-white hover:bg-[rgba(255,255,255,0.1)] transition-colors backdrop-blur-md flex items-center gap-2"
-                  title="Share URL"
-                >
-                  <Share2 size={16} />
-                  {copiedLink && <span className="text-[10px] font-bold tracking-wider absolute -bottom-6 left-1/2 -translate-x-1/2 text-emerald-400">COPIED</span>}
-                </button>
-                <div className="relative">
-                  <button
-                    onClick={() => setExportMenuOpen(!exportMenuOpen)}
-                    className="p-2.5 rounded-lg bg-[rgba(18,20,30,0.8)] border border-[rgba(255,255,255,0.1)] text-gray-300 hover:text-white hover:bg-[rgba(255,255,255,0.1)] transition-colors backdrop-blur-md flex items-center gap-1.5"
-                    title="Export Options"
-                  >
-                    <Download size={16} />
-                    <ChevronDown size={14} className="opacity-70" />
-                  </button>
-
-                  {exportMenuOpen && (
-                    <div className="absolute right-0 mt-2 w-48 rounded-xl border border-[rgba(255,255,255,0.1)] bg-[#1a1c28] p-1.5 shadow-2xl backdrop-blur-xl z-50">
-                      <button
-                        onClick={handleDownloadPNG}
-                        className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-white text-left"
-                      >
-                        <ImageIcon size={14} /> High-Res PNG
-                      </button>
-                      <button
-                        onClick={handleDownloadSVG}
-                        className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-white text-left"
-                      >
-                        <Box size={14} /> Vector SVG
-                      </button>
-                      <div className="my-1 border-t border-[rgba(255,255,255,0.06)]" />
-                      <button
-                        onClick={handleRecordGif}
-                        className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] transition-colors hover:bg-[rgba(99,102,241,0.15)] hover:text-[var(--accent-indigo)] text-left"
-                      >
-                        <Video size={14} /> Record Animated GIF
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-            
-            {hasResult ? (
-              <div
-                ref={reactFlowWrapper}
-                className="w-full h-[65vh] min-h-[500px] md:h-auto md:flex-1 relative border rounded-2xl overflow-hidden flex flex-col"
-                style={{
-                  borderColor: "var(--border-accent)",
-                  background: "var(--bg-secondary)",
-                }}
-              >
-                <ReactFlow
-                  nodes={nodes}
-                  edges={edges}
-                  onNodesChange={onNodesChange}
-                  onEdgesChange={onEdgesChange}
-                  nodeTypes={nodeTypes}
-                  proOptions={proOptions}
-                  connectionLineType={ConnectionLineType.SmoothStep}
-                  fitView
-                  fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
-                  minZoom={0.1}
-                  maxZoom={2}
-                  panOnScroll={true}
-                  preventScrolling={false} // Allow natural page scrolling over canvas on mobile
-                  zoomOnScroll={false}
-                  zoomOnPinch={true}
-                  zoomOnDoubleClick={false}
-                >
-                  <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#333" />
-                  <Controls className="dark:bg-gray-800 dark:border-gray-700 dark:fill-white" />
-                  <MiniMap className="hidden md:block dark:bg-gray-900" nodeColor="#4f46e5" />
-                </ReactFlow>
-              </div>
-            ) : (
-              <div
-                id="canvas-placeholder"
-                className="flex w-full h-[65vh] min-h-[500px] md:h-auto md:flex-1 items-center justify-center rounded-2xl border-2 border-dashed transition-colors duration-300"
-                style={{
-                  borderColor: "var(--border-subtle)",
-                  background: "var(--bg-secondary)",
-                }}
-              >
-                <div className="text-center">
-                  <Braces
-                    className="mx-auto mb-3 h-10 w-10"
-                    style={{ color: "var(--text-muted)" }}
-                    strokeWidth={1}
-                  />
-                  <p className="text-sm text-[var(--text-muted)]">
-                    Your query visualization will appear here
-                  </p>
-                  <p className="mt-1 text-xs text-[var(--text-muted)] opacity-60">
-                    Try a sample above or paste your own SQL
-                  </p>
-                </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      {/* ════════════════════════════════════════════════════════════ */}
-      {/*  FOOTER                                                      */}
-      {/* ════════════════════════════════════════════════════════════ */}
-      <footer className="mt-auto border-t py-5 text-center flex flex-col items-center gap-2"
-        style={{ borderColor: "rgba(255,255,255,0.05)" }}
-      >
-        <p className="text-xs tracking-wider text-[var(--text-muted)]">
-          Built by <span className="font-semibold text-[var(--text-secondary)]">Dex</span>{" "}
-          <span className="mx-1 opacity-30">|</span>{" "}
-          <span className="hero-gradient-text text-[11px] font-bold">D3xTRverse</span>
-        </p>
-        <button 
-          onClick={runParserDiagnostics}
-          className="text-[10px] text-[var(--text-muted)] opacity-20 hover:opacity-100 transition-opacity bg-transparent border-none cursor-pointer"
+        {/* ════════════════════════════════════════════════════════════ */}
+        {/*  FOOTER                                                      */}
+        {/* ════════════════════════════════════════════════════════════ */}
+        <footer className="mt-auto border-t py-5 text-center flex flex-col items-center gap-2"
+          style={{ borderColor: "rgba(255,255,255,0.05)" }}
         >
-          Run Diagnostics
+          <p className="text-xs tracking-wider text-[var(--text-muted)]">
+            Built by{" "}
+            <a
+              href="https://saynam-portfolio-19qy.vercel.app/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-bold text-[var(--accent-indigo)] transition-all duration-300 hover:text-[#a5b4fc] hover:underline hover:drop-shadow-[0_0_12px_rgba(165,180,252,1)]"
+            >
+              Saynam
+            </a>{" "}
+            <span className="mx-1 opacity-30">|</span>{" "}
+            <span className="hero-gradient-text text-[11px] font-bold">D3xTRverse</span>
+          </p>
+          <button
+            onClick={runParserDiagnostics}
+            className="text-[10px] text-[var(--text-muted)] opacity-20 hover:opacity-100 transition-opacity bg-transparent border-none cursor-pointer"
+          >
+            Run Diagnostics
+          </button>
+        </footer>
+
+        {/* ════════════════════════════════════════════════════════════ */}
+        {/*  EASTER EGG: Floating Chat Button & Modal                    */}
+        {/* ════════════════════════════════════════════════════════════ */}
+        <button
+          onClick={() => setShowEasterEgg(true)}
+          className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full border border-indigo-400/50 bg-[#12141e]/80 shadow-[0_0_20px_rgba(99,102,241,0.4)] backdrop-blur-xl transition-all duration-300 hover:scale-110 hover:border-indigo-300 hover:shadow-[0_0_30px_rgba(99,102,241,0.6)] group"
+        >
+          <div className="absolute inset-0 rounded-full bg-indigo-500/20 animate-ping opacity-30" />
+          <MessageSquare className="h-6 w-6 text-indigo-300 transition-colors group-hover:text-white relative z-10" />
         </button>
-      </footer>
+
+        <AnimatePresence>
+          {showEasterEgg && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                className="relative w-full max-w-md overflow-hidden rounded-2xl border border-[rgba(255,100,100,0.3)] bg-[#12141e] shadow-[0_0_40px_rgba(255,50,50,0.15)]"
+              >
+                {/* Terminal header */}
+                <div className="flex items-center justify-between border-b border-[rgba(255,255,255,0.05)] bg-black/40 px-4 py-3">
+                  <div className="flex gap-2">
+                    <div className="h-3 w-3 rounded-full bg-red-500/80" />
+                    <div className="h-3 w-3 rounded-full bg-yellow-500/80" />
+                    <div className="h-3 w-3 rounded-full bg-green-500/80" />
+                  </div>
+                  <button
+                    onClick={() => setShowEasterEgg(false)}
+                    className="text-gray-500 hover:text-white transition-colors"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                {/* Content */}
+                <div className="p-6">
+                  <div className="mb-4 flex items-center gap-3">
+                    <AlertTriangle className="h-6 w-6 text-red-500 animate-pulse" />
+                    <h3 className="text-lg font-bold text-red-400 drop-shadow-[0_0_8px_rgba(248,113,113,0.5)] uppercase tracking-wide">
+                      System Overload 💀
+                    </h3>
+                  </div>
+
+                  <p className="mb-4 text-sm leading-relaxed text-gray-300">
+                    Look bestie, I'd <em>love</em> to have a deep, philosophical debate about your questionable <code className="bg-black/30 px-1 py-0.5 rounded text-indigo-300 text-xs font-mono">LEFT JOIN</code> logic 🤓, but AI Chat tokens cost actual money 💸 and this is just a portfolio project!
+                  </p>
+
+                  <p className="mb-6 text-xs text-gray-400 italic">
+                    If you want to fund my API addiction so we can chat, hit up <a href="https://youtube.com/@D3xTRverse" target="_blank" rel="noreferrer" className="text-indigo-400 hover:text-indigo-300 underline underline-offset-2">D3xTRverse on YouTube 📺</a>. (Smash that subscribe like a poorly written DROP TABLE command 💥)
+                  </p>
+
+                  <button
+                    onClick={() => setShowEasterEgg(false)}
+                    className="w-full rounded-xl bg-gradient-to-r from-red-900/50 to-orange-900/50 border border-red-500/30 px-4 py-3 font-semibold text-red-200 transition-all hover:from-red-900/70 hover:to-orange-900/70 hover:text-white hover:border-red-400/50"
+                  >
+                    Fair Enough, I am broke too 😭
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </motion.main>
     </>
   );

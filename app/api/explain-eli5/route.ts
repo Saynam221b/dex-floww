@@ -11,18 +11,17 @@ function createClient(apiKey: string) {
 }
 
 const SYSTEM_PROMPT =
-  "You are an expert data engineer. I will give you a JSON object mapping node IDs to SQL operations. Return a strict JSON response with the exact same keys, but replace the SQL strings with a 1-sentence, plain-English explanation of what that specific operation is doing. Output ONLY valid JSON, no markdown formatting or backticks.";
+  "You are an expert teacher. Take the provided SQL operation and explain it using a simple, real-world everyday analogy (like sorting toys, ordering pizza, or finding a book in a library). Break it down step-by-step so a non-technical person or a 5-year-old could understand it. Output plain text, maximum 3-4 short sentences.";
 
 /* ------------------------------------------------------------------ */
 /*  Groq call with key rotation                                       */
 /* ------------------------------------------------------------------ */
 
-async function callGroqWithFallback(nodeMap: Record<string, string>): Promise<Record<string, string>> {
+async function callGroqELI5(snippet: string): Promise<string> {
   if (API_KEYS.length === 0) {
     throw new Error("No GROQ_API_KEY_* environment variables configured.");
   }
 
-  const userContent = JSON.stringify(nodeMap);
   let lastError: unknown;
 
   for (let i = 0; i < API_KEYS.length; i++) {
@@ -33,36 +32,27 @@ async function callGroqWithFallback(nodeMap: Record<string, string>): Promise<Re
         model: "llama-3.3-70b-versatile",
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userContent },
+          { role: "user", content: snippet },
         ],
-        temperature: 0.2,
-        max_tokens: 1024,
+        temperature: 0.5,
+        max_tokens: 256,
       });
 
-      const raw = completion.choices?.[0]?.message?.content ?? "";
-
-      // Strip any accidental markdown fences
-      const cleaned = raw
-        .replace(/^```(?:json)?\s*/i, "")
-        .replace(/\s*```$/i, "")
-        .trim();
-
-      const parsed = JSON.parse(cleaned);
-      return parsed as Record<string, string>;
+      return completion.choices?.[0]?.message?.content?.trim() ?? "";
     } catch (err: unknown) {
       lastError = err;
 
-      // Only rotate on 429 rate limit errors
       const status = (err as { status?: number })?.status;
       const statusCode = (err as { error?: { code?: number } })?.error?.code;
       const isRateLimit = status === 429 || statusCode === 429;
 
       if (isRateLimit && i < API_KEYS.length - 1) {
-        console.warn(`[Groq] Key ${i + 1} rate-limited (429). Rotating to key ${i + 2}…`);
+        console.warn(
+          `[Groq ELI5] Key ${i + 1} rate-limited (429). Rotating to key ${i + 2}…`
+        );
         continue;
       }
 
-      // If not a 429 or we're on the last key, throw
       throw err;
     }
   }
@@ -77,26 +67,27 @@ async function callGroqWithFallback(nodeMap: Record<string, string>): Promise<Re
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { nodeMap } = body;
+    const { snippet } = body;
 
-    if (!nodeMap || Object.keys(nodeMap).length === 0) {
+    if (!snippet || typeof snippet !== "string") {
       return Response.json(
-        { error: "Missing or empty `nodeMap` field in request body." },
+        { error: "Missing or invalid `snippet` string in request body." },
         { status: 400 }
       );
     }
 
-    const explanations = await callGroqWithFallback(nodeMap);
+    const explanation = await callGroqELI5(snippet);
 
-    return Response.json({ explanations, nodeMap });
+    return Response.json({ explanation });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Failed to generate explanations.";
+    const message =
+      err instanceof Error ? err.message : "Failed to generate ELI5 explanation.";
     const status = (err as { status?: number })?.status;
 
-    console.error("[/api/explain] Error:", message);
+    console.error("[/api/explain-eli5] Error:", message);
 
     return Response.json(
-      { error: "Explanation generation failed.", details: message },
+      { error: "ELI5 generation failed.", details: message },
       { status: status === 429 ? 429 : 500 }
     );
   }

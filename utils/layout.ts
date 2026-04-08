@@ -2,29 +2,28 @@ import dagre from "dagre";
 import type { Node, Edge } from "@xyflow/react";
 
 /* ------------------------------------------------------------------ */
-/*  Default node dimensions — must match rendered SqlNode size         */
+/*  Default node dimensions — fallbacks when no measured height exists */
 /* ------------------------------------------------------------------ */
 
 const DEFAULT_NODE_WIDTH = 320;
 const DEFAULT_NODE_HEIGHT = 180; // compact collapsed height
-const EXPANDED_NODE_HEIGHT = 320; // height when AI explanation is visible
 const HORIZONTAL_SPACING = 80;
-const VERTICAL_SPACING = 100;
+const VERTICAL_SPACING = 60;
 
 /* ------------------------------------------------------------------ */
 /*  getLayoutedElements                                                */
 /*  Runs dagre on the current nodes + edges and returns new arrays     */
 /*  with calculated { x, y } positions for a top-to-bottom DAG.       */
 /*                                                                     */
-/*  expandedNodeIds — set of node IDs currently showing AI insight.    */
-/*  dagre uses the taller height for these so neighbours shift away.   */
+/*  nodeHeights — map of nodeId → measured DOM height in pixels.       */
+/*  When provided, dagre uses the real height instead of guessing.     */
 /* ------------------------------------------------------------------ */
 
 export function getLayoutedElements(
   nodes: Node[],
   edges: Edge[],
   direction: "TB" | "LR" = "TB",
-  expandedNodeIds?: Set<string>
+  nodeHeights?: Map<string, number>
 ): { nodes: Node[]; edges: Edge[] } {
   const g = new dagre.graphlib.Graph();
 
@@ -38,12 +37,13 @@ export function getLayoutedElements(
     marginy: 40,
   });
 
-  // Register every node with dagre — expanded nodes get a taller height
+  // Register every node — use measured height if available, else default
   for (const node of nodes) {
-    const isExpanded = expandedNodeIds?.has(node.id) ?? false;
+    const measuredH = nodeHeights?.get(node.id);
+    const h = measuredH ?? DEFAULT_NODE_HEIGHT;
     g.setNode(node.id, {
       width: DEFAULT_NODE_WIDTH,
-      height: isExpanded ? EXPANDED_NODE_HEIGHT : DEFAULT_NODE_HEIGHT,
+      height: h,
     });
   }
 
@@ -58,8 +58,8 @@ export function getLayoutedElements(
   // Map dagre positions back onto React Flow nodes
   const layoutedNodes: Node[] = nodes.map((node) => {
     const dagreNode = g.node(node.id);
-    const isExpanded = expandedNodeIds?.has(node.id) ?? false;
-    const h = isExpanded ? EXPANDED_NODE_HEIGHT : DEFAULT_NODE_HEIGHT;
+    const measuredH = nodeHeights?.get(node.id);
+    const h = measuredH ?? DEFAULT_NODE_HEIGHT;
 
     // dagre returns center coordinates — React Flow uses top-left origin
     return {
