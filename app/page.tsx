@@ -463,34 +463,33 @@ function FlowApp() {
   const rawDataRef = useRef<{ nodeMap: NodeMap; explanations: Explanations } | null>(null);
   const relayoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /* ---- URL Sync — lz-string compression ---- */
-  const isInitialized = useRef(false);
+  /* ---- URL Sync — lz-string compression (runs ONCE on mount) ---- */
+  const hasLoadedUrl = useRef(false);
   useEffect(() => {
-    if (isInitialized.current) return;
+    if (hasLoadedUrl.current) return;
+    hasLoadedUrl.current = true;
+
     const urlParams = new URLSearchParams(window.location.search);
     const q = urlParams.get("q");
-    if (q) {
-      try {
-        // Try lz-string first, fallback to legacy base64
-        const decoded = LZString.decompressFromEncodedURIComponent(q) || atob(q);
-        setSql(decoded);
-        setChaosCleared(true);
-        
-        // Clean up the URL to prevent massive URL strings from causing iOS Safari crash loops
-        try {
-          const newUrl = new URL(window.location.href);
-          newUrl.searchParams.delete("q");
-          window.history.replaceState({}, '', newUrl.toString());
-        } catch (e) {
-          console.warn("Could not clear URL history", e);
-        }
+    if (!q) return;
 
-        setTimeout(() => handleVisualize(decoded), 100);
-      } catch (e) {
-        console.error("Failed to decode query from URL", e);
-      }
+    try {
+      // Try lz-string first, fallback to legacy base64
+      const decoded = LZString.decompressFromEncodedURIComponent(q) || atob(q);
+      if (!decoded) return;
+
+      // Immediately strip the ?q= param to prevent iOS Safari crash loops
+      // on subsequent re-renders. Use native API — never Next.js router.
+      window.history.replaceState(null, '', window.location.pathname);
+
+      setSql(decoded);
+      setChaosCleared(true);
+
+      // Defer visualization to next tick so state is settled
+      setTimeout(() => handleVisualize(decoded), 100);
+    } catch (e) {
+      console.error("Failed to decode query from URL", e);
     }
-    isInitialized.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -713,7 +712,15 @@ function FlowApp() {
       const query = overrideSql ?? sql;
       if (!query.trim()) return;
 
-      // DO NOT update URL with lz-string compressed query on every visualize to prevent mobile Safari crash loops.
+      // Update URL for sharing using NATIVE browser API only.
+      // Never use Next.js router.push/replace — it triggers a full
+      // re-render cycle that causes infinite loops on iOS Safari.
+      try {
+        const compressed = LZString.compressToEncodedURIComponent(query);
+        window.history.replaceState(null, '', `?q=${compressed}`);
+      } catch {
+        // Silently fail — URL sharing is non-critical
+      }
 
       setLoading(true);
       setStage("parsing");
