@@ -110,6 +110,11 @@ function SqlNodeComponent({ data, id }: NodeProps) {
   const lastReportedHeight = useRef(0);
 
   /* Measure actual DOM height and report to parent for dagre layout */
+  const onHeightReportRef = useRef(d.onHeightReport);
+  onHeightReportRef.current = d.onHeightReport;
+  const nodeIdRef = useRef(id);
+  nodeIdRef.current = id;
+
   useEffect(() => {
     const el = nodeRef.current;
     if (!el) return;
@@ -117,21 +122,23 @@ function SqlNodeComponent({ data, id }: NodeProps) {
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const h = Math.ceil(entry.contentRect.height) + 30; // +padding/border
-        // Only report if height changed meaningfully (>10px threshold)
-        if (Math.abs(h - lastReportedHeight.current) > 10) {
+        // Only report if height changed meaningfully (>15px threshold)
+        // Higher threshold prevents iOS sub-pixel jitter from triggering loops
+        if (Math.abs(h - lastReportedHeight.current) > 15) {
           lastReportedHeight.current = h;
-          updateNodeInternals(id);
-          // Debounce the layout trigger slightly
-          setTimeout(() => {
-            d.onHeightReport?.(id, h);
-          }, 60);
+          updateNodeInternals(nodeIdRef.current);
+          onHeightReportRef.current?.(nodeIdRef.current, h);
         }
       }
     });
 
     observer.observe(el);
     return () => observer.disconnect();
-  }, [id, updateNodeInternals, d]);
+    // Intentionally stable deps — refs handle the mutable values.
+    // Including `d` here would reconnect the observer every render,
+    // causing an infinite loop on iOS Safari.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [updateNodeInternals]);
 
   /* Cycle through fake messages while thinking */
   useEffect(() => {

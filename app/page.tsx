@@ -521,10 +521,19 @@ function FlowApp() {
   }, [setNodes, setEdges]);
 
   /* ---- Debounced relayout using measured heights ---- */
+  // Cap automatic relayout passes to prevent infinite ResizeObserver loops
+  // on iOS Safari. Manual expand/collapse resets the counter.
+  const relayoutCountRef = useRef(0);
+  const MAX_AUTO_RELAYOUTS = 3;
+
   const triggerRelayout = useCallback(() => {
     if (relayoutTimerRef.current) clearTimeout(relayoutTimerRef.current);
     relayoutTimerRef.current = setTimeout(() => {
       if (!rawDataRef.current) return;
+      // Guard: prevent infinite relayout from ResizeObserver churn
+      if (relayoutCountRef.current >= MAX_AUTO_RELAYOUTS) return;
+      relayoutCountRef.current += 1;
+
       const { nodeMap, explanations } = rawDataRef.current;
       const { nodes: layoutedNodes, edges: layoutedEdges } = transformToGraph(
         nodeMap,
@@ -535,7 +544,7 @@ function FlowApp() {
       );
       setNodes(layoutedNodes);
       setEdges(layoutedEdges);
-    }, 80);
+    }, 200); // 200ms debounce — absorbs iOS reflow jitter
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setNodes, setEdges]);
 
@@ -558,6 +567,9 @@ function FlowApp() {
         // When collapsing, remove stored height so default is used
         nodeHeightsRef.current.delete(nodeId);
       }
+
+      // Manual action — reset the auto-relayout cap
+      relayoutCountRef.current = 0;
 
       // Re-layout using stashed raw data
       triggerRelayout();
@@ -745,6 +757,7 @@ function FlowApp() {
       setEdges([]);
       setHasResult(false);
       nodeHeightsRef.current = new Map();
+      relayoutCountRef.current = 0; // Fresh visualization — allow relayout passes
 
       try {
         // Stage 1: Parse SQL → AST & NodeMap
