@@ -14,51 +14,52 @@ export interface AstNode {
   [key: string]: unknown;
 }
 
+const MAX_NODES = 200;
+
 export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, any> {
   const nodes: Record<string, any> = {};
   const target: AstNode = Array.isArray(ast) ? ast[0] : ast;
 
   if (!target) return nodes;
 
+  // Helper to check if we've hit the safety limit
+  const isOverLimit = () => Object.keys(nodes).length >= MAX_NODES;
+
   // Process CTEs (with clauses) first
   try {
     if (target.with) {
-      // Two-pass CTE processing: create ALL group (parent) nodes FIRST
-      // so dagre and React Flow never encounter a child referencing a
-      // parent that hasn't been registered yet.
-
-      // Pass 1 — register group container nodes
       const cteChildEntries: Array<{ groupId: string; children: Record<string, any> }> = [];
       for (let i = 0; i < target.with.length; i++) {
+        if (isOverLimit()) break;
+
         const cte: any = target.with[i];
         const name: string = cte.name?.value || `cte_${i}`;
         const groupId = `node_cte_${name}`;
 
-        // Group node MUST exist before any child references it.
         nodes[groupId] = { sql: `CTE: ${name}`, isGroup: true, label: name };
 
-        // Parse CTE body
         try {
           const innerStmt = cte.stmt?.ast ?? cte.stmt;
           const cteStmts = flattenAstToNodeMap(innerStmt);
           cteChildEntries.push({ groupId, children: cteStmts });
         } catch {
-          // Individual CTE body failed — group still exists, just empty.
           cteChildEntries.push({ groupId, children: {} });
         }
       }
 
-      // Pass 2 — attach children to their groups
       for (const { groupId, children } of cteChildEntries) {
         for (const [key, val] of Object.entries(children)) {
+          if (isOverLimit()) break;
           const valueObj = typeof val === "string" ? { sql: val } : val;
           nodes[`${key}_${groupId.replace('node_', '')}`] = { ...valueObj, parentId: groupId };
         }
       }
     }
   } catch {
-    // Ignore CTE parsing errors and proceed
+    // Ignore CTE parsing errors
   }
+
+  if (isOverLimit()) return nodes;
 
   // SELECT columns
   try {
@@ -87,11 +88,14 @@ export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, an
     nodes["node_select"] = "Complex Select Operation";
   }
 
+  if (isOverLimit()) return nodes;
+
   // FROM tables & JOINs
   try {
     if (Array.isArray(target.from)) {
       let joinIdx = 0;
       target.from.forEach((src, i) => {
+        if (isOverLimit()) return;
         const tableName = src.as ? `${src.table} AS ${src.as}` : src.table || `source_${i}`;
 
         if (src.join) {
@@ -106,6 +110,8 @@ export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, an
   } catch {
     nodes["node_from"] = "Complex From Operation";
   }
+
+  if (isOverLimit()) return nodes;
 
   // WHERE
   try {
@@ -188,17 +194,17 @@ export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, an
   // Try processing unions
   try {
     if (target._next) {
-       // UNION queries have _next recursively in node-sql-parser
        let curr: any = target._next;
        let uIndex = 1;
        while(curr) {
+          if (isOverLimit()) break;
           nodes[`node_union_${uIndex}`] = `UNION`;
-          // Prevent O(N!) explosion: don't let the recursive call process the rest of the chain
           const currClone = { ...curr };
           delete currClone._next; 
           
           const subNodes = flattenAstToNodeMap(currClone);
           for (const key in subNodes) {
+             if (isOverLimit()) break;
              nodes[`${key}_u${uIndex}`] = subNodes[key];
           }
           curr = curr._next;
@@ -211,6 +217,7 @@ export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, an
 
   return nodes;
 }
+
 
 /** Utility to clean up stringified JSON if it somehow escapes */
 function sanitizeNoJson(str: string): string {

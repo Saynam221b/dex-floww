@@ -377,6 +377,18 @@ function FlowApp() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { getNodes } = useReactFlow();
 
+  /* ---- Device Detection & Stability ---- */
+  const [isMobileSafari, setIsMobileSafari] = useState(false);
+  useEffect(() => {
+    const ua = navigator.userAgent;
+    const isIOS = /iPad|iPhone|iPod/.test(ua);
+    const isSafari = /^((?!chrome|android).)*safari/i.test(ua);
+    if (isIOS && isSafari) {
+      setIsMobileSafari(true);
+      console.log("[D3xTRverse] Mobile Safari detected. Activating stability guards.");
+    }
+  }, []);
+
   /* ---- Splash Screen ---- */
   const [showSplash, setShowSplash] = useState(true);
   useEffect(() => {
@@ -524,7 +536,7 @@ function FlowApp() {
   // Cap automatic relayout passes to prevent infinite ResizeObserver loops
   // on iOS Safari. Manual expand/collapse resets the counter.
   const relayoutCountRef = useRef(0);
-  const MAX_AUTO_RELAYOUTS = 3;
+  const MAX_AUTO_RELAYOUTS = isMobileSafari ? 1 : 3;
 
   const triggerRelayout = useCallback(() => {
     if (relayoutTimerRef.current) clearTimeout(relayoutTimerRef.current);
@@ -739,8 +751,14 @@ function FlowApp() {
         isUrlTriggered.current = false;
       } else {
         try {
+          // Guard: Mobile Safari crashes on extremely long URL states.
+          // Limit to ~2000 chars (safe threshold for most browsers).
           const compressed = LZString.compressToEncodedURIComponent(query);
-          window.history.replaceState(null, '', `?q=${compressed}`);
+          if (!isMobileSafari || compressed.length < 2000) {
+            window.history.replaceState(null, '', `?q=${compressed}`);
+          } else {
+             console.warn("[D3xTRverse] URL length excessive for mobile — skipping sync.");
+          }
         } catch {
           // Silently fail — URL sharing is non-critical
         }

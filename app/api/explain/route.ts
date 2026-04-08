@@ -1,4 +1,5 @@
 import Groq from "groq-sdk";
+import { logger } from "@/lib/logger";
 
 const API_KEYS = [
   process.env.GROQ_API_KEY_1,
@@ -18,15 +19,24 @@ Rules:
 - DO NOT just translate the SQL to English. Focus on the analytical intent. Output ONLY valid JSON.`;
 
 /* ------------------------------------------------------------------ */
-/*  Groq call with key rotation                                       */
+/*  Groq call with key rotation & deduplication                        */
 /* ------------------------------------------------------------------ */
 
-async function callGroqWithFallback(nodeMap: Record<string, string>): Promise<Record<string, string>> {
+interface ExplainerPayload {
+  [key: string]: { type: string; sql: string };
+}
+
+async function callGroqWithFallback(nodeMap: Record<string, string>, userAgent: string): Promise<Record<string, string>> {
+  const source = "Explain";
+  
   if (API_KEYS.length === 0) {
     throw new Error("No GROQ_API_KEY_* environment variables configured.");
   }
 
-  const payload: Record<string, { type: string; sql: string }> = {};
+  // 1. Deduplicate SQL snippets to save tokens and prevent redundant AI calls
+  const sqlToIds = new Map<string, string[]>();
+  const payload: ExplainerPayload = {};
+  
   for (const [key, sql] of Object.entries(nodeMap)) {
     const normalized = key.replace(/_u\d+$/, "");
     let type = "output";
@@ -35,8 +45,23 @@ async function callGroqWithFallback(nodeMap: Record<string, string>): Promise<Re
     else if (normalized.startsWith("node_where") || normalized.startsWith("node_having")) type = "filter";
     else if (normalized.startsWith("node_groupby") || normalized.startsWith("node_orderby")) type = "aggregate";
     
-    payload[key] = { type, sql };
+    // Check if we've seen this exact SQL before
+    if (sqlToIds.has(sql)) {
+      sqlToIds.get(sql)!.push(key);
+    } else {
+      sqlToIds.set(sql, [key]);
+      payload[key] = { type, sql };
+    }
   }
+
+  const uniqueCount = Object.keys(payload).length;
+  const totalCount = Object.keys(nodeMap).length;
+  
+  logger.info("Deduplication complete", source, { 
+    totalLinks: totalCount, 
+    uniqueSnippets: uniqueCount,
+    savedRequests: totalCount - uniqueCount
+  });
 
   const userContent = JSON.stringify(payload);
   let lastError: unknown;
@@ -45,6 +70,7 @@ async function callGroqWithFallback(nodeMap: Record<string, string>): Promise<Re
     const client = createClient(API_KEYS[i]);
 
     try {
+      const startTime = performance.now();
       const completion = await client.chat.completions.create({
         model: "llama-3.3-70b-versatile",
         messages: [
@@ -54,31 +80,43 @@ async function callGroqWithFallback(nodeMap: Record<string, string>): Promise<Re
         temperature: 0.2,
         max_tokens: 1024,
       });
+      const duration = performance.now() - startTime;
 
       const raw = completion.choices?.[0]?.message?.content ?? "";
+      const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+      const parsed = JSON.parse(cleaned) as Record<string, string>;
 
-      // Strip any accidental markdown fences
-      const cleaned = raw
-        .replace(/^```(?:json)?\s*/i, "")
-        .replace(/\s*```$/i, "")
-        .trim();
+      // 2. Rehydrate deduplicated results
+      const finalExplanations: Record<string, string> = {};
+      for (const [uniqueId, explanation] of Object.entries(parsed)) {
+        const originalSql = payload[uniqueId].sql;
+        const allIdsForThisSql = sqlToIds.get(originalSql) || [];
+        for (const id of allIdsForThisSql) {
+          finalExplanations[id] = explanation;
+        }
+      }
 
-      const parsed = JSON.parse(cleaned);
-      return parsed as Record<string, string>;
+      logger.info("Groq generation successful", source, { 
+        durationMs: duration.toFixed(2),
+        keyIndex: i + 1,
+        userAgent
+      });
+
+      return finalExplanations;
     } catch (err: unknown) {
       lastError = err;
-
-      // Only rotate on 429 rate limit errors
-      const status = (err as { status?: number })?.status;
-      const statusCode = (err as { error?: { code?: number } })?.error?.code;
-      const isRateLimit = status === 429 || statusCode === 429;
+      const status = (err as any)?.status;
+      const isRateLimit = status === 429;
 
       if (isRateLimit && i < API_KEYS.length - 1) {
-        console.warn(`[Groq] Key ${i + 1} rate-limited (429). Rotating to key ${i + 2}…`);
+        logger.warn(`Key ${i + 1} rate-limited. Rotating to key ${i + 2}...`, source, { 
+          keyIndex: i + 1,
+          nextIndex: i + 2
+        });
         continue;
       }
 
-      // If not a 429 or we're on the last key, throw
+      logger.error("Groq attempt failed", source, err, { keyIndex: i + 1 });
       throw err;
     }
   }
@@ -91,12 +129,13 @@ async function callGroqWithFallback(nodeMap: Record<string, string>): Promise<Re
 /* ------------------------------------------------------------------ */
 
 export async function POST(request: Request) {
+  const userAgent = request.headers.get("user-agent") || "unknown";
+  const source = "Explain";
+
   try {
     const body = await request.json();
     const { nodeMap } = body;
     
-    console.log(`[D3xTRverse Explain] Received request for ${nodeMap ? Object.keys(nodeMap).length : 0} nodes`);
-
     if (!nodeMap || Object.keys(nodeMap).length === 0) {
       return Response.json(
         { error: "Missing or empty `nodeMap` field in request body." },
@@ -104,17 +143,19 @@ export async function POST(request: Request) {
       );
     }
 
-    console.time("Groq Completion");
-    const explanations = await callGroqWithFallback(nodeMap);
-    console.timeEnd("Groq Completion");
-    console.log(`[D3xTRverse Explain] Successfully generated ${Object.keys(explanations).length} explanations.`);
+    logger.info("Processing explanation request", source, { 
+      nodeCount: Object.keys(nodeMap).length,
+      userAgent 
+    });
+
+    const explanations = await callGroqWithFallback(nodeMap, userAgent);
 
     return Response.json({ explanations, nodeMap });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Failed to generate explanations.";
-    const status = (err as { status?: number })?.status;
+    const status = (err as any)?.status;
 
-    console.error("[/api/explain] Error:", message);
+    logger.error("Route handler failure", source, err);
 
     return Response.json(
       { error: "Explanation generation failed.", details: message },
@@ -122,3 +163,4 @@ export async function POST(request: Request) {
     );
   }
 }
+

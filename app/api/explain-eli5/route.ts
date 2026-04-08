@@ -1,4 +1,5 @@
 import Groq from "groq-sdk";
+import { logger } from "@/lib/logger";
 
 const API_KEYS = [
   process.env.GROQ_API_KEY_1,
@@ -17,7 +18,9 @@ const SYSTEM_PROMPT =
 /*  Groq call with key rotation                                       */
 /* ------------------------------------------------------------------ */
 
-async function callGroqELI5(snippet: string): Promise<string> {
+async function callGroqELI5(snippet: string, userAgent: string): Promise<string> {
+  const source = "ELI5";
+  
   if (API_KEYS.length === 0) {
     throw new Error("No GROQ_API_KEY_* environment variables configured.");
   }
@@ -38,21 +41,27 @@ async function callGroqELI5(snippet: string): Promise<string> {
         max_tokens: 256,
       });
 
+      logger.info("ELI5 generation successful", source, { 
+        keyIndex: i + 1,
+        userAgent
+      });
+
       return completion.choices?.[0]?.message?.content?.trim() ?? "";
     } catch (err: unknown) {
       lastError = err;
 
       const status = (err as { status?: number })?.status;
-      const statusCode = (err as { error?: { code?: number } })?.error?.code;
-      const isRateLimit = status === 429 || statusCode === 429;
+      const isRateLimit = status === 429;
 
       if (isRateLimit && i < API_KEYS.length - 1) {
-        console.warn(
-          `[Groq ELI5] Key ${i + 1} rate-limited (429). Rotating to key ${i + 2}…`
-        );
+        logger.warn(`Key ${i + 1} rate-limited. Rotating to key ${i + 2}...`, source, { 
+          keyIndex: i + 1,
+          nextIndex: i + 2
+        });
         continue;
       }
 
+      logger.error("ELI5 attempt failed", source, err, { keyIndex: i + 1 });
       throw err;
     }
   }
@@ -65,6 +74,9 @@ async function callGroqELI5(snippet: string): Promise<string> {
 /* ------------------------------------------------------------------ */
 
 export async function POST(request: Request) {
+  const userAgent = request.headers.get("user-agent") || "unknown";
+  const source = "ELI5";
+
   try {
     const body = await request.json();
     const { snippet } = body;
@@ -76,15 +88,15 @@ export async function POST(request: Request) {
       );
     }
 
-    const explanation = await callGroqELI5(snippet);
+    logger.info("Processing ELI5 request", source, { userAgent });
+    const explanation = await callGroqELI5(snippet, userAgent);
 
     return Response.json({ explanation });
   } catch (err: unknown) {
-    const message =
-      err instanceof Error ? err.message : "Failed to generate ELI5 explanation.";
+    const message = err instanceof Error ? err.message : "Failed to generate ELI5 explanation.";
     const status = (err as { status?: number })?.status;
 
-    console.error("[/api/explain-eli5] Error:", message);
+    logger.error("ELI5 route handler failure", source, err);
 
     return Response.json(
       { error: "ELI5 generation failed.", details: message },
@@ -92,3 +104,4 @@ export async function POST(request: Request) {
     );
   }
 }
+
