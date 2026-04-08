@@ -1,21 +1,27 @@
 import { Parser } from "node-sql-parser";
 import { flattenAstToNodeMap, type AstNode } from "@/lib/ast";
+import { buildGraphModel } from "@/lib/graph-core";
 import { logger } from "@/lib/logger";
+import { badRequest, createRequestId, readJson } from "@/lib/server/request";
+
+interface ParseRequestBody {
+  sql?: unknown;
+  dialect?: unknown;
+}
 
 export async function POST(request: Request) {
+  const requestId = createRequestId();
   const userAgent = request.headers.get("user-agent") || "unknown";
   const source = "Parse";
 
   try {
-    const body = await request.json();
-    const { sql, dialect } = body;
+    const body = await readJson<ParseRequestBody>(request);
+    const sql = typeof body?.sql === "string" ? body.sql : "";
+    const dialect = typeof body?.dialect === "string" ? body.dialect : "Standard SQL";
 
-    if (!sql || typeof sql !== "string") {
+    if (!sql) {
       logger.warn("Missing or invalid sql field", source, { userAgent });
-      return Response.json(
-        { error: "Missing or invalid `sql` field in request body." },
-        { status: 400 }
-      );
+      return badRequest(requestId, "Missing or invalid `sql` field in request body.");
     }
 
     // Map dialect names to node-sql-parser database options
@@ -38,6 +44,7 @@ export async function POST(request: Request) {
     
     const parser = new Parser();
 
+    const parseStart = performance.now();
     let ast;
     try {
       ast = parser.astify(sql, { database: dbType });
@@ -49,6 +56,7 @@ export async function POST(request: Request) {
       const colMatch = msg.match(/col(?:umn)?\s+(\d+)/i);
       return Response.json(
         {
+          requestId,
           error: "Invalid SQL syntax.",
           details: msg,
           line: lineMatch ? parseInt(lineMatch[1], 10) : null,
@@ -58,14 +66,18 @@ export async function POST(request: Request) {
       );
     }
 
+    const parseDuration = performance.now() - parseStart;
     let nodeMap;
+    let graph;
     try {
       const startTime = performance.now();
       nodeMap = flattenAstToNodeMap(ast as unknown as AstNode);
+      graph = buildGraphModel(nodeMap);
       const duration = performance.now() - startTime;
       
       logger.info("AST mapping complete", source, { 
         nodeCount: Object.keys(nodeMap).length,
+        edgeCount: graph.edges.length,
         durationMs: duration.toFixed(2),
         isComplex: Object.keys(nodeMap).length > 50
       });
@@ -77,6 +89,7 @@ export async function POST(request: Request) {
       
       return Response.json(
         {
+          requestId,
           error: "Unsupported complex syntax in query",
           details: mapErr instanceof Error ? mapErr.message : "The AST mapper could not process this query structure.",
           line: null,
@@ -86,15 +99,32 @@ export async function POST(request: Request) {
       );
     }
 
-    return Response.json({ ast, nodeMap });
+    const params = new URL(request.url).searchParams;
+    const verbose = params.get("verbose") === "1";
+
+    return Response.json({
+      requestId,
+      graph: {
+        nodeMap,
+        nodes: graph.nodes,
+        edges: graph.edges,
+      },
+      warnings: [],
+      metrics: {
+        parseMs: Number(parseDuration.toFixed(2)),
+        graphMs: Number((performance.now() - parseStart - parseDuration).toFixed(2)),
+        nodeCount: graph.nodes.length,
+        edgeCount: graph.edges.length,
+      },
+      ...(verbose ? { ast, nodeMap } : {}),
+    });
   } catch (err: unknown) {
     logger.error("Unexpected error in parse route", source, err);
     const message = err instanceof Error ? err.message : "Internal server error.";
 
     return Response.json(
-      { error: "Internal server error.", details: message },
+      { requestId, error: "Internal server error.", details: message },
       { status: 500 }
     );
   }
 }
-

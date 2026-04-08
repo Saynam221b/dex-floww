@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 export interface AstNode {
   type?: string;
   columns?: unknown;
@@ -10,37 +8,55 @@ export interface AstNode {
   orderby?: unknown;
   limit?: unknown;
   distinct?: unknown;
-  with?: Array<any>;
+  with?: Array<Record<string, unknown>>;
   [key: string]: unknown;
 }
 
 const MAX_NODES = 200;
 
-export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, any> {
-  const nodes: Record<string, any> = {};
+export interface FlattenedNode {
+  sql: string;
+  parentId?: string;
+  isGroup?: boolean;
+  label?: string;
+  isExpanded?: boolean;
+  [key: string]: unknown;
+}
+
+export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, FlattenedNode> {
+  const nodes: Record<string, FlattenedNode> = {};
+  let nodeCount = 0;
   const target: AstNode = Array.isArray(ast) ? ast[0] : ast;
 
   if (!target) return nodes;
 
-  // Helper to check if we've hit the safety limit
-  const isOverLimit = () => Object.keys(nodes).length >= MAX_NODES;
+  const isOverLimit = () => nodeCount >= MAX_NODES;
+  const setNode = (id: string, sql: string, extra?: Omit<FlattenedNode, "sql">) => {
+    if (isOverLimit()) return;
+    nodes[id] = { sql, ...(extra ?? {}) };
+    nodeCount += 1;
+  };
 
   // Process CTEs (with clauses) first
   try {
     if (target.with) {
-      const cteChildEntries: Array<{ groupId: string; children: Record<string, any> }> = [];
+      const cteChildEntries: Array<{ groupId: string; children: Record<string, FlattenedNode> }> = [];
       for (let i = 0; i < target.with.length; i++) {
         if (isOverLimit()) break;
 
-        const cte: any = target.with[i];
+        const cte = target.with[i] as { name?: { value?: string }; stmt?: { ast?: AstNode | AstNode[] } | AstNode | AstNode[] };
         const name: string = cte.name?.value || `cte_${i}`;
         const groupId = `node_cte_${name}`;
 
-        nodes[groupId] = { sql: `CTE: ${name}`, isGroup: true, label: name, isExpanded: false };
+        setNode(groupId, `CTE: ${name}`, { isGroup: true, label: name, isExpanded: false, cteName: name });
 
         try {
-          const innerStmt = cte.stmt?.ast ?? cte.stmt;
-          const cteStmts = flattenAstToNodeMap(innerStmt);
+          const stmt = cte.stmt;
+          const innerStmt =
+            stmt && typeof stmt === "object" && !Array.isArray(stmt) && "ast" in stmt
+              ? ((stmt as { ast?: AstNode | AstNode[] }).ast ?? stmt)
+              : stmt;
+          const cteStmts = flattenAstToNodeMap((innerStmt as AstNode | AstNode[]) ?? []);
           cteChildEntries.push({ groupId, children: cteStmts });
         } catch {
           cteChildEntries.push({ groupId, children: {} });
@@ -50,8 +66,11 @@ export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, an
       for (const { groupId, children } of cteChildEntries) {
         for (const [key, val] of Object.entries(children)) {
           if (isOverLimit()) break;
-          const valueObj = typeof val === "string" ? { sql: val } : val;
-          nodes[`${key}_${groupId.replace('node_', '')}`] = { ...valueObj, parentId: groupId };
+          setNode(
+            `${key}_${groupId.replace("node_", "")}`,
+            val.sql,
+            { ...val, parentId: groupId }
+          );
         }
       }
     }
@@ -65,27 +84,28 @@ export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, an
   try {
     if (target.columns) {
       if (target.columns === "*") {
-        nodes["node_select"] = "SELECT *";
+        setNode("node_select", "SELECT *");
       } else if (Array.isArray(target.columns)) {
-        const cols = target.columns.map((c: any) => {
-          const item = c.expr || c;
+        const cols = target.columns.map((c) => {
+          const item = ((c as { expr?: unknown }).expr || c) as Record<string, unknown>;
           const table = item.table;
           const colname = item.column;
           let colStr = "";
           if (table && colname) {
              colStr = `${table}.${colname}`;
           } else if (colname) {
-             colStr = colname;
+             colStr = String(colname);
           } else {
              colStr = stringifyExpression(item);
           }
-          return c.as ? `${colStr} AS ${c.as}` : colStr;
+          const alias = (c as { as?: string }).as;
+          return alias ? `${colStr} AS ${alias}` : colStr;
         }).join(", ");
-        nodes["node_select"] = `SELECT ${target.distinct ? "DISTINCT " : ""}${cols}`;
+        setNode("node_select", `SELECT ${target.distinct ? "DISTINCT " : ""}${cols}`);
       }
     }
   } catch {
-    nodes["node_select"] = "Complex Select Operation";
+    setNode("node_select", "Complex Select Operation");
   }
 
   if (isOverLimit()) return nodes;
@@ -101,14 +121,14 @@ export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, an
         if (src.join) {
           joinIdx++;
           const onClause = src.on ? ` ON ${stringifyExpression(src.on)}` : "";
-          nodes[`node_join_${joinIdx}`] = `${src.join} JOIN ${tableName}${onClause}`;
+          setNode(`node_join_${joinIdx}`, `${src.join} JOIN ${tableName}${onClause}`);
         } else {
-          nodes[`node_from_${i + 1}`] = `FROM ${tableName}`;
+          setNode(`node_from_${i + 1}`, `FROM ${tableName}`);
         }
       });
     }
   } catch {
-    nodes["node_from"] = "Complex From Operation";
+    setNode("node_from", "Complex From Operation");
   }
 
   if (isOverLimit()) return nodes;
@@ -116,26 +136,26 @@ export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, an
   // WHERE
   try {
     if (target.where) {
-      nodes["node_where"] = `WHERE ${sanitizeNoJson(stringifyExpression(target.where))}`;
+      setNode("node_where", `WHERE ${sanitizeNoJson(stringifyExpression(target.where))}`);
     }
   } catch {
-    nodes["node_where"] = "Complex Where Operation";
+    setNode("node_where", "Complex Where Operation");
   }
 
   // GROUP BY
   try {
     if (target.groupby) {
       const gbObj = Array.isArray(target.groupby) ? target.groupby : [target.groupby];
-      const cols = gbObj.map((g: any) => {
-        const item = g.expr || g;
+      const cols = gbObj.map((g) => {
+        const item = ((g as { expr?: unknown }).expr || g) as Record<string, unknown>;
         if (item.table && item.column) return `${item.table}.${item.column}`;
         if (item.column) return item.column;
         return stringifyExpression(item);
       }).join(", ");
-      nodes["node_groupby"] = `GROUP BY ${sanitizeNoJson(cols)}`;
+      setNode("node_groupby", `GROUP BY ${sanitizeNoJson(cols)}`);
     }
   } catch {
-    nodes["node_groupby"] = "Complex Group By Operation";
+    setNode("node_groupby", "Complex Group By Operation");
   }
 
   // HAVING
@@ -143,36 +163,37 @@ export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, an
     if (target.having) {
       let havingElements = "";
       if (Array.isArray(target.having)) {
-        havingElements = target.having.map((h: any) => stringifyExpression(h.expr || h)).join(", ");
+        havingElements = target.having.map((h) => stringifyExpression((h as { expr?: unknown }).expr || h)).join(", ");
       } else {
         havingElements = stringifyExpression(target.having);
       }
-      nodes["node_having"] = `HAVING ${sanitizeNoJson(havingElements)}`;
+      setNode("node_having", `HAVING ${sanitizeNoJson(havingElements)}`);
     }
   } catch {
-    nodes["node_having"] = "Complex Having Operation";
+    setNode("node_having", "Complex Having Operation");
   }
 
   // ORDER BY
   try {
     if (target.orderby) {
       const obObj = Array.isArray(target.orderby) ? target.orderby : [target.orderby];
-      const orderElements = obObj.map((ob: any) => {
-        const item = ob.expr || ob;
+      const orderElements = obObj.map((ob) => {
+        const item = ((ob as { expr?: unknown }).expr || ob) as Record<string, unknown>;
         let colStr = "";
         if (item.table && item.column) {
             colStr = `${item.table}.${item.column}`;
         } else if (item.column) {
-            colStr = item.column;
+            colStr = String(item.column);
         } else {
             colStr = stringifyExpression(item);
         }
-        return ob.type ? `${colStr} ${ob.type}` : colStr;
+        const type = (ob as { type?: string }).type;
+        return type ? `${colStr} ${type}` : colStr;
       }).join(", ");
-      nodes["node_orderby"] = `ORDER BY ${sanitizeNoJson(orderElements)}`;
+      setNode("node_orderby", `ORDER BY ${sanitizeNoJson(orderElements)}`);
     }
   } catch {
-    nodes["node_orderby"] = "Complex Order By Operation";
+    setNode("node_orderby", "Complex Order By Operation");
   }
 
   // LIMIT
@@ -180,39 +201,43 @@ export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, an
     if (target.limit) {
       let limitStr = "";
       if (typeof target.limit === "object" && target.limit !== null && "value" in target.limit) {
-        const limitVal = (target.limit as any).value;
-        limitStr =  Array.isArray(limitVal) ? limitVal.map((v: any) => v.value ?? stringifyExpression(v)).join(", ") : String(limitVal);
+        const limitVal = (target.limit as { value?: unknown }).value;
+        limitStr =  Array.isArray(limitVal)
+          ? limitVal
+              .map((v) => ((v as { value?: unknown }).value ?? stringifyExpression(v)))
+              .join(", ")
+          : String(limitVal);
       } else {
         limitStr = stringifyExpression(target.limit);
       }
-      nodes["node_limit"] = `LIMIT ${sanitizeNoJson(limitStr)}`;
+      setNode("node_limit", `LIMIT ${sanitizeNoJson(limitStr)}`);
     }
   } catch {
-    nodes["node_limit"] = "Complex Limit Operation";
+    setNode("node_limit", "Complex Limit Operation");
   }
   
   // Try processing unions
   try {
     if (target._next) {
-       let curr: any = target._next;
+       let curr = target._next as Record<string, unknown> | undefined;
        let uIndex = 1;
        while(curr) {
           if (isOverLimit()) break;
-          nodes[`node_union_${uIndex}`] = `UNION`;
+          setNode(`node_union_${uIndex}`, "UNION");
           const currClone = { ...curr };
-          delete currClone._next; 
+          delete currClone._next;
           
-          const subNodes = flattenAstToNodeMap(currClone);
+          const subNodes = flattenAstToNodeMap(currClone as AstNode);
           for (const key in subNodes) {
              if (isOverLimit()) break;
-             nodes[`${key}_u${uIndex}`] = subNodes[key];
+             setNode(`${key}_u${uIndex}`, subNodes[key].sql, subNodes[key]);
           }
-          curr = curr._next;
+          curr = curr._next as Record<string, unknown> | undefined;
           uIndex++;
        }
     }
   } catch {
-      nodes["node_union"] = "Complex Union Operation";
+      setNode("node_union", "Complex Union Operation");
   }
 
   return nodes;
@@ -250,6 +275,10 @@ export function stringifyExpression(expr: unknown): string {
 
   try {
     const e = expr as Record<string, unknown>;
+    const argsObj =
+      e.args && typeof e.args === "object" && !Array.isArray(e.args)
+        ? (e.args as { expr?: unknown; exprList?: unknown[] })
+        : null;
 
     if (e.type === "binary_expr") {
       const left = stringifyExpression(e.left);
@@ -266,14 +295,22 @@ export function stringifyExpression(expr: unknown): string {
       const name = e.name || "";
       let args = "";
       if (e.args) {
-        if ((e.args as any).expr) {
-          if ((e.args as any).expr.type === "star") {
+        if (argsObj?.expr !== undefined) {
+          const exprArg = argsObj.expr;
+          const exprRecord =
+            exprArg && typeof exprArg === "object" ? (exprArg as { type?: string }) : null;
+          if (exprRecord?.type === "star") {
             args = "*";
           } else {
-            args = stringifyExpression((e.args as any).expr);
+            args = stringifyExpression(exprArg);
           }
-        } else if (Array.isArray((e.args as any).exprList)) {
-          args = (e.args as any).exprList.map((x: any) => stringifyExpression(x.expr || x)).join(", ");
+        } else if (Array.isArray(argsObj?.exprList)) {
+          args = argsObj.exprList
+            .map((x) => {
+              const xRecord = x && typeof x === "object" ? (x as { expr?: unknown }) : null;
+              return stringifyExpression(xRecord?.expr ?? x);
+            })
+            .join(", ");
         } else if (Array.isArray(e.args)) {
           args = e.args.map((x: unknown) => stringifyExpression(x)).join(", ");
         } else {
@@ -291,7 +328,12 @@ export function stringifyExpression(expr: unknown): string {
       return stringifyExpression(e.expr);
     }
     if (e.columns && Array.isArray(e.columns)) {
-      return e.columns.map((c: any) => stringifyExpression(c.expr || c)).join(", ");
+      return e.columns
+        .map((c) => {
+          const column = c as { expr?: unknown };
+          return stringifyExpression(column.expr || c);
+        })
+        .join(", ");
     }
     if (e.value !== undefined) {
       return Array.isArray(e.value)
@@ -313,4 +355,3 @@ export function stringifyExpression(expr: unknown): string {
     return "[Complex Expression]";
   }
 }
-

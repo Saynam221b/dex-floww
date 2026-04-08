@@ -7,8 +7,8 @@ import type { Node, Edge } from "@xyflow/react";
 
 const DEFAULT_NODE_WIDTH = 320;
 const DEFAULT_NODE_HEIGHT = 180; // compact collapsed height
-const HORIZONTAL_SPACING = 100; // distance between ranks (LR)
-const VERTICAL_SPACING = 50;
+const HORIZONTAL_SPACING = 140; // distance between ranks (LR)
+const VERTICAL_SPACING = 70;
 
 /* Padding inside CTE group bounding boxes so children don't touch the border */
 const GROUP_PADDING = 40;
@@ -59,17 +59,18 @@ export function getLayoutedElements(
   // 3. REWIRE EDGES: redirect edges pointing to/from hidden children to their CTE parent
   const visibleEdges: Edge[] = [];
   const edgeKeySet = new Set<string>();
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
 
   for (const edge of edges) {
     let sourceId = edge.source;
     let targetId = edge.target;
 
-    const sourceNode = nodes.find(n => n.id === sourceId);
+    const sourceNode = nodeById.get(sourceId);
     if (sourceNode?.parentId && collapsedGroups.has(sourceNode.parentId)) {
       sourceId = sourceNode.parentId;
     }
 
-    const targetNode = nodes.find(n => n.id === targetId);
+    const targetNode = nodeById.get(targetId);
     if (targetNode?.parentId && collapsedGroups.has(targetNode.parentId)) {
       targetId = targetNode.parentId;
     }

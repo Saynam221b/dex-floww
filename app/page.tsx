@@ -1,24 +1,11 @@
 "use client";
 
-import { useState, useCallback, useMemo, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import SplashScreen from "@/components/SplashScreen";
 import DialectSelector from "@/components/DialectSelector";
-import { runParserDiagnostics } from "@/utils/testParser";
 import {
-  ReactFlow,
-  Background,
-  Controls,
-  MiniMap,
-  useNodesState,
-  useEdgesState,
   useReactFlow,
-  getNodesBounds,
-  getViewportForBounds,
-  type Node,
-  type Edge,
-  BackgroundVariant,
-  ConnectionLineType,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
@@ -26,6 +13,9 @@ import {
   Braces,
   Loader2,
   AlertTriangle,
+  Sparkles,
+  Copy,
+  Check,
   RotateCcw,
   Zap,
   Database,
@@ -44,92 +34,19 @@ import {
   ExternalLink,
   Home as HomeIcon,
 } from "lucide-react";
-import SqlNodeComponent, { type SqlNodeData } from "@/components/SqlNode";
-import CteGroupNode from "@/components/CteGroupNode";
-import { getLayoutedElements } from "@/utils/layout";
+import dynamic from "next/dynamic";
+import { useSqlVisualization } from "@/hooks/useSqlVisualization";
+import { useCanvasExport } from "@/hooks/useCanvasExport";
 
 import Editor from "react-simple-code-editor";
 import Prism from "prismjs";
 import "prismjs/components/prism-sql";
 import "prismjs/themes/prism-tomorrow.css"; // dark theme
-import { toPng, toSvg } from "html-to-image";
 import LZString from "lz-string";
 
-/* ------------------------------------------------------------------ */
-/*  Types                                                              */
-/* ------------------------------------------------------------------ */
-
-type NodeMapObj = { sql: string; parentId?: string; isGroup?: boolean; label?: string; [key: string]: unknown };
-type NodeMap = Record<string, NodeMapObj>;
-type Explanations = Record<string, string>;
-
-/* ------------------------------------------------------------------ */
-/*  Layer ordering — controls rank placement in DAG                    */
-/* ------------------------------------------------------------------ */
-
-const LAYER_ORDER: Record<string, number> = {
-  from: 0,
-  join: 1,
-  where: 2,
-  groupby: 3,
-  having: 4,
-  select: 5,
-  orderby: 6,
-  limit: 7,
-  union: 8,
-};
-
-const LAYER_LABELS: Record<string, string> = {
-  from: "FROM",
-  join: "JOIN",
-  where: "WHERE",
-  groupby: "GROUP BY",
-  having: "HAVING",
-  select: "SELECT",
-  orderby: "ORDER BY",
-  limit: "LIMIT",
-  union: "UNION",
-};
-
-/* ------------------------------------------------------------------ */
-/*  Edge colors per operation type                                     */
-/* ------------------------------------------------------------------ */
-
-const EDGE_COLORS: Record<string, string> = {
-  source: "#3b82f6",
-  join: "#a855f7",
-  filter: "#f59e0b",
-  aggregate: "#10b981",
-  output: "#cbd5e1",
-};
-
-/* ------------------------------------------------------------------ */
-/*  Detect node type from ID key                                       */
-/* ------------------------------------------------------------------ */
-
-function detectNodeType(key: string): string {
-  // Strip UNION sub-query suffix like _u1, _u2 for type detection
-  const normalized = key.replace(/_u\d+$/, "");
-  if (normalized.startsWith("node_from")) return "from";
-  if (normalized.startsWith("node_join")) return "join";
-  if (normalized.startsWith("node_where")) return "where";
-  if (normalized.startsWith("node_groupby")) return "groupby";
-  if (normalized.startsWith("node_having")) return "having";
-  if (normalized.startsWith("node_select")) return "select";
-  if (normalized.startsWith("node_orderby")) return "orderby";
-  if (normalized.startsWith("node_limit")) return "limit";
-  if (normalized.startsWith("node_union")) return "union";
-  return "unknown";
-}
-
-function getOperationType(layerType: string): string {
-  if (layerType === "from") return "source";
-  if (layerType === "join") return "join";
-  if (layerType === "where" || layerType === "having") return "filter";
-  if (layerType === "groupby" || layerType === "orderby") return "aggregate";
-  return "output";
-}
-
+const GraphCanvas = dynamic(() => import("@/components/GraphCanvas"), {
+  ssr: false,
+});
 
 /* ------------------------------------------------------------------ */
 /*  Sample SQL queries for quick-start buttons                         */
@@ -210,183 +127,54 @@ LIMIT 30;`,
   },
 ];
 
-/* ------------------------------------------------------------------ */
-/*  Transformation: nodeMap + explanations → React Flow graph          */
-function getActivePath(nodeId: string, edges: Edge[]): { activeNodes: Set<string>; activeEdges: Set<string> } {
-  const activeNodes = new Set<string>();
-  const activeEdges = new Set<string>();
+type OptimizerQuality = "poor" | "fair" | "good";
 
-  const visitedAncestors = new Set<string>();
-  const visitedDescendants = new Set<string>();
-
-  const traverseUp = (id: string) => {
-    if (visitedAncestors.has(id)) return;
-    visitedAncestors.add(id);
-    activeNodes.add(id);
-    edges.forEach((e) => {
-      if (e.target === id) {
-        activeEdges.add(e.id);
-        traverseUp(e.source);
-      }
-    });
-  };
-
-  const traverseDown = (id: string) => {
-    if (visitedDescendants.has(id)) return;
-    visitedDescendants.add(id);
-    activeNodes.add(id);
-    edges.forEach((e) => {
-      if (e.source === id) {
-        activeEdges.add(e.id);
-        traverseDown(e.target);
-      }
-    });
-  };
-
-  traverseUp(nodeId);
-  traverseDown(nodeId);
-
-  return { activeNodes, activeEdges };
+interface QueryOptimizationResult {
+  optimizedSql: string;
+  summary: string;
+  quality: OptimizerQuality;
+  shouldOptimize: boolean;
+  riskFlags: string[];
+  confidence: number;
+  cached?: boolean;
+  skippedLLM?: boolean;
 }
 
-function transformToGraph(
-  nodeMap: NodeMap,
-  explanations: Explanations,
-  onExpandToggle: (nodeId: string, expanded: boolean) => void,
-  onHeightReport: (nodeId: string, height: number) => void,
-  onCteExpandToggle: (nodeId: string, expanded: boolean) => void,
-  nodeHeights?: Map<string, number>,
-  isMobileSafari?: boolean
-): { nodes: Node[]; edges: Edge[] } {
-  const entries = Object.entries(nodeMap);
-
-  const nodes: Node[] = [];
-  const edges: Edge[] = [];
-
-  // Group by layer
-  const layers: Record<string, { key: string; sql: string; parentId?: string }[]> = {};
-  
-  for (const [key, val] of entries) {
-    const isObj = typeof val === "object" && val !== null;
-    const sql = isObj ? val.sql : val;
-    const parentId = isObj ? val.parentId : undefined;
-    const isGroup = isObj ? val.isGroup : undefined;
-    const label = isObj ? val.label : undefined;
-
-    if (isGroup) {
-      if (!isMobileSafari) {
-        nodes.push({
-          id: key,
-          type: "cteGroup",
-          data: { label, isExpanded: val.isExpanded, onCteExpandToggle, nodeId: key },
-          position: { x: 0, y: 0 },
-          style: { zIndex: -1 },
-        });
-      }
-      continue;
-    }
-
-    const type = detectNodeType(key);
-    if (!layers[type]) layers[type] = [];
-    layers[type].push({ key, sql, parentId });
-  }
-
-  // Sort layers by LAYER_ORDER
-  const sortedLayerTypes = Object.keys(layers).sort(
-    (a, b) => (LAYER_ORDER[a] ?? 99) - (LAYER_ORDER[b] ?? 99)
-  );
-
-  // Track previous layer's IDs for edges
-  let prevLayerIds: string[] = [];
-
-  sortedLayerTypes.forEach((layerType) => {
-    const items = layers[layerType];
-    const currentLayerIds: string[] = [];
-
-    items.forEach((item) => {
-      const id = item.key;
-      currentLayerIds.push(id);
-
-      const parentNode = item.parentId ? nodeMap[item.parentId] : null;
-      const parentLabel = (typeof parentNode === "object" && parentNode !== null) ? (parentNode as { label: string }).label : null;
-
-      const nodeData: SqlNodeData = {
-        label: isMobileSafari && parentLabel 
-          ? `[${parentLabel}] ${LAYER_LABELS[layerType] ?? layerType.toUpperCase()}`
-          : (LAYER_LABELS[layerType] ?? layerType.toUpperCase()),
-        sql: item.sql,
-        explanation: explanations[item.key] || "Processing…",
-        nodeType: layerType,
-        operationType: getOperationType(layerType),
-        onExpandToggle,
-        onHeightReport,
-        nodeId: id,
-      };
-
-      nodes.push({
-        id,
-        type: "sqlNode",
-        parentId: isMobileSafari ? undefined : item.parentId,
-        extent: (item.parentId && !isMobileSafari) ? "parent" : undefined,
-        position: { x: 0, y: 0 },
-        data: nodeData as unknown as Record<string, unknown>,
-      });
-    });
-
-    // Smart edge creation: connect previous layer → current layer
-    if (prevLayerIds.length > 0) {
-      for (const sourceId of prevLayerIds) {
-        for (const targetId of currentLayerIds) {
-          const sourceType = detectNodeType(sourceId);
-          const sourceOpType = getOperationType(sourceType);
-          edges.push({
-            id: `edge-${sourceId}-${targetId}`,
-            source: sourceId,
-            target: targetId,
-            type: "smoothstep",
-            animated: false,
-            // @ts-expect-error - pathOptions is valid for smoothstep but not typed in generic Edge
-            pathOptions: { borderRadius: 24 },
-            data: {
-              originalColor: EDGE_COLORS[sourceOpType] ?? "#6366f1",
-            },
-            style: {
-              stroke: EDGE_COLORS[sourceOpType] ?? "#6366f1",
-              strokeWidth: 2,
-              opacity: 0.55,
-            },
-          });
-        }
-      }
-    }
-
-    prevLayerIds = currentLayerIds;
-  });
-
-  // Run dagre layout with measured node heights
-  return getLayoutedElements(nodes, edges, "LR", nodeHeights);
+function createOptimizerKey(query: string, dialect: string): string {
+  const normalized = query.replace(/\s+/g, " ").trim().toLowerCase();
+  return `${dialect}::${normalized}`;
 }
 
 /* ------------------------------------------------------------------ */
 /*  Page component                                                     */
 /* ------------------------------------------------------------------ */
 
-const nodeTypes = { sqlNode: SqlNodeComponent, cteGroup: CteGroupNode };
-
 function FlowApp() {
   const [sql, setSql] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [stage, setStage] = useState<"idle" | "parsing" | "explaining" | "rendering">("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [errorDetails, setErrorDetails] = useState<{ line?: number | null; column?: number | null } | null>(null);
-  const [hasResult, setHasResult] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [copiedOptimized, setCopiedOptimized] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [showCreatorModal, setShowCreatorModal] = useState(false);
   const [dialect, setDialect] = useState("Standard SQL");
-  const [toasterVisible, setToasterVisible] = useState(false);
+  const [optimizerLoading, setOptimizerLoading] = useState(false);
+  const [optimizerError, setOptimizerError] = useState<string | null>(null);
+  const [optimizerResult, setOptimizerResult] = useState<QueryOptimizationResult | null>(null);
+  const optimizeRequestIdRef = useRef(0);
+  const lastOptimizedKeyRef = useRef<string | null>(null);
+  const optimizeAbortRef = useRef<AbortController | null>(null);
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { getNodes } = useReactFlow();
+  const { handleDownloadPNG, handleDownloadSVG } = useCanvasExport({
+    reactFlowWrapper,
+    getNodes,
+    onExportStart: () => setExportMenuOpen(false),
+  });
+
+  useEffect(() => {
+    return () => {
+      optimizeAbortRef.current?.abort();
+    };
+  }, []);
 
   /* ---- Device Detection & Stability ---- */
   const [isMobileSafari, setIsMobileSafari] = useState(false);
@@ -413,84 +201,35 @@ function FlowApp() {
   /* ---- Chaos-to-Clarity Hero ---- */
   const [chaosCleared, setChaosCleared] = useState(false);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState([] as Node[]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([] as Edge[]);
-
-  /* ---- Interactive Path Highlighting ---- */
-  const handleNodeClick = useCallback(
-    (_event: React.MouseEvent, node: Node) => {
-      const { activeNodes, activeEdges } = getActivePath(node.id, edges);
-
-      setNodes((nds) =>
-        nds.map((n) => ({
-          ...n,
-          style: {
-            ...n.style,
-            opacity: n.type === "cteGroup" || activeNodes.has(n.id) ? 1 : 0.3,
-          },
-        }))
-      );
-
-      setEdges((eds) =>
-        eds.map((e) => {
-          const isActive = activeEdges.has(e.id);
-          const originalColor = (e.data?.originalColor as string) || "#6366f1";
-          return {
-            ...e,
-            animated: isActive,
-            style: {
-              ...e.style,
-              stroke: isActive ? "#22d3ee" : originalColor,
-              opacity: isActive ? 1 : 0.2,
-              strokeWidth: isActive ? 3 : 2,
-              filter: isActive ? "drop-shadow(0 0 8px rgba(34,211,238,0.8))" : "none",
-            },
-          };
-        })
-      );
-    },
-    [edges, setNodes, setEdges]
-  );
-
-  const handlePaneClick = useCallback(() => {
-    setNodes((nds) =>
-      nds.map((n) => ({
-        ...n,
-        style: {
-          ...n.style,
-          opacity: 1,
-        },
-      }))
-    );
-
-    setEdges((eds) =>
-      eds.map((e) => {
-        const originalColor = (e.data?.originalColor as string) || "#6366f1";
-        return {
-          ...e,
-          animated: false, // restore to static background
-          style: {
-            ...e.style,
-            stroke: originalColor,
-            opacity: 0.55,
-            strokeWidth: 2,
-            filter: "none",
-          },
-        };
-      })
-    );
-  }, [setNodes, setEdges]);
-
-  // Track measured node heights and stash raw data for re-layout
-  const nodeHeightsRef = useRef<Map<string, number>>(new Map());
-  const rawDataRef = useRef<{ nodeMap: NodeMap; explanations: Explanations } | null>(null);
-  const relayoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const {
+    nodes,
+    edges,
+    onNodesChange,
+    onEdgesChange,
+    handleNodeClick,
+    handlePaneClick,
+    handleVisualize,
+    handleToggleAll,
+    resetVisualization,
+    loading,
+    stage,
+    error,
+    errorDetails,
+    hasResult,
+    toasterVisible,
+    setError,
+    setErrorDetails,
+    setToasterVisible,
+    markNextVisualizeAsUrlTriggered,
+  } = useSqlVisualization({
+    sql,
+    dialect,
+    isMobileSafari,
+    reactFlowWrapper,
+  });
 
   /* ---- URL Sync — lz-string compression (runs ONCE on mount) ---- */
   const hasLoadedUrl = useRef(false);
-  // When true, handleVisualize will NOT re-inject the ?q= param.
-  // This breaks the iOS Safari crash loop: load → strip → re-inject → reload.
-  const isUrlTriggered = useRef(false);
   useEffect(() => {
     if (hasLoadedUrl.current) return;
     hasLoadedUrl.current = true;
@@ -511,8 +250,7 @@ function FlowApp() {
       setSql(decoded);
       setChaosCleared(true);
 
-      // Flag so handleVisualize skips URL re-injection
-      isUrlTriggered.current = true;
+      markNextVisualizeAsUrlTriggered();
 
       // Defer visualization to next tick so state is settled
       setTimeout(() => handleVisualize(decoded), 100);
@@ -522,240 +260,132 @@ function FlowApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* ---- ReactFlow config ---- */
-  const proOptions = useMemo(() => ({ hideAttribution: true }), []);
-
   /* ---- Clear graph ---- */
   const clearGraph = useCallback(() => {
+    optimizeAbortRef.current?.abort();
+    optimizeAbortRef.current = null;
     setSql("");
-    setNodes([]);
-    setEdges([]);
-    setHasResult(false);
-    setError(null);
-    setErrorDetails(null);
-    setToasterVisible(false);
-    nodeHeightsRef.current = new Map();
-    rawDataRef.current = null;
+    resetVisualization();
+    setOptimizerResult(null);
+    setOptimizerError(null);
+    setCopiedOptimized(false);
+    setOptimizerLoading(false);
+    optimizeRequestIdRef.current += 1;
+    lastOptimizedKeyRef.current = null;
     
     // Clear URL if possible
     const url = new URL(window.location.href);
     url.searchParams.delete("q");
     window.history.replaceState({}, '', url);
-  }, [setNodes, setEdges]);
+  }, [resetVisualization]);
 
-  /* ---- Debounced relayout using measured heights ---- */
-  // Cap automatic relayout passes to prevent infinite ResizeObserver loops
-  // on iOS Safari. Manual expand/collapse resets the counter.
-  const relayoutCountRef = useRef(0);
-  const MAX_AUTO_RELAYOUTS = isMobileSafari ? 1 : 3;
+  const clearResultsForEditing = useCallback(() => {
+    optimizeAbortRef.current?.abort();
+    optimizeAbortRef.current = null;
+    resetVisualization();
+    setOptimizerResult(null);
+    setOptimizerError(null);
+    setCopiedOptimized(false);
+    setOptimizerLoading(false);
+    optimizeRequestIdRef.current += 1;
+    lastOptimizedKeyRef.current = null;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("q");
+    window.history.replaceState({}, "", url);
+  }, [resetVisualization]);
 
-  const triggerRelayout = useCallback(() => {
-    if (relayoutTimerRef.current) clearTimeout(relayoutTimerRef.current);
-    relayoutTimerRef.current = setTimeout(() => {
-      if (!rawDataRef.current) return;
-      // Guard: prevent infinite relayout from ResizeObserver churn
-      if (relayoutCountRef.current >= MAX_AUTO_RELAYOUTS) return;
-      relayoutCountRef.current += 1;
+  const handleOptimizeQuery = useCallback(async () => {
+    const query = sql.trim();
+    if (!query) return;
+    const optimizeKey = createOptimizerKey(query, dialect);
 
-      const { nodeMap, explanations } = rawDataRef.current;
-      const { nodes: layoutedNodes, edges: layoutedEdges } = transformToGraph(
-        nodeMap,
-        explanations,
-        handleExpandToggle,
-        handleHeightReport,
-        handleCteExpandToggle,
-        nodeHeightsRef.current,
-        isMobileSafari
-      );
-      setNodes(layoutedNodes);
-      setEdges(layoutedEdges);
-    }, 200); // 200ms debounce — absorbs iOS reflow jitter
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setNodes, setEdges]);
-
-  /* ---- Height report callback from nodes ---- */
-  const handleHeightReport = useCallback(
-    (nodeId: string, height: number) => {
-      const prev = nodeHeightsRef.current.get(nodeId);
-      if (prev !== height) {
-        nodeHeightsRef.current.set(nodeId, height);
-        triggerRelayout();
-      }
-    },
-    [triggerRelayout]
-  );
-
-  /* ---- CTE Expansion toggle callback ---- */
-  const handleCteExpandToggle = useCallback(
-    (nodeId: string, expanded: boolean) => {
-      if (!rawDataRef.current) return;
-      
-      const nodeObj = rawDataRef.current.nodeMap[nodeId];
-      if (nodeObj && typeof nodeObj === 'object') {
-        nodeObj.isExpanded = expanded;
-      }
-      
-      // Manual action — reset the auto-relayout cap
-      relayoutCountRef.current = 0;
-
-      triggerRelayout();
-    },
-    [triggerRelayout]
-  );
-
-  /* ---- Expansion toggle callback — re-runs dagre ---- */
-  const handleExpandToggle = useCallback(
-    (nodeId: string, expanded: boolean) => {
-      if (!expanded) {
-        // When collapsing, remove stored height so default is used
-        nodeHeightsRef.current.delete(nodeId);
-      }
-
-      // Manual action — reset the auto-relayout cap
-      relayoutCountRef.current = 0;
-
-      // Re-layout using stashed raw data
-      triggerRelayout();
-    },
-    [triggerRelayout]
-  );
-
-  /* ---- Expand / Collapse All ---- */
-  const handleToggleAll = useCallback((expand: boolean) => {
-    if (!rawDataRef.current) return;
-
-    if (!expand) {
-      nodeHeightsRef.current = new Map();
+    if (lastOptimizedKeyRef.current === optimizeKey && optimizerResult && !optimizerError) {
+      return;
     }
 
-    const { nodeMap, explanations } = rawDataRef.current;
-    const { nodes: layoutedNodes, edges: layoutedEdges } = transformToGraph(
-      nodeMap,
-      explanations,
-      handleExpandToggle,
-      handleHeightReport,
-      handleCteExpandToggle,
-      nodeHeightsRef.current,
-      isMobileSafari
-    );
-    setNodes(layoutedNodes);
-    setEdges(layoutedEdges);
-  }, [setNodes, setEdges, handleExpandToggle, handleHeightReport, handleCteExpandToggle, isMobileSafari]);
+    optimizeRequestIdRef.current += 1;
+    const requestId = optimizeRequestIdRef.current;
 
-  /* ---- Full-Canvas Export (High-Quality) ---- */
-  const handleDownloadPNG = useCallback(() => {
-    if (reactFlowWrapper.current === null) return;
-    setExportMenuOpen(false);
+    optimizeAbortRef.current?.abort();
+    const controller = new AbortController();
+    optimizeAbortRef.current = controller;
 
-    const allNodes = getNodes();
-    if (allNodes.length === 0) return;
+    setOptimizerLoading(true);
+    setOptimizerError(null);
+    setCopiedOptimized(false);
 
-    const nodeBounds = getNodesBounds(allNodes);
-    const padding = 100;
-    const imageWidth = nodeBounds.width + padding * 2;
-    const imageHeight = nodeBounds.height + padding * 2;
-
-    // Use zoom 1 so nodes render at their true pixel size
-    const viewport = getViewportForBounds(
-      nodeBounds,
-      imageWidth,
-      imageHeight,
-      1,   // minZoom — keep 1:1 scale for clarity
-      1,   // maxZoom — prevent upscaling artifacts
-      padding
-    );
-
-    const flowViewport = reactFlowWrapper.current.querySelector(
-      '.react-flow__viewport'
-    ) as HTMLElement;
-    if (!flowViewport) return;
-
-    const exportOptions = {
-      backgroundColor: '#0f172a',
-      width: imageWidth,
-      height: imageHeight,
-      pixelRatio: 3, // 3x for retina-quality output
-      quality: 1,
-      style: {
-        width: `${imageWidth}px`,
-        height: `${imageHeight}px`,
-        transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
-      },
-      filter: (node: Element) => {
-        // Exclude minimap, controls, and attribution from export
-        const cls = node.classList;
-        if (!cls) return true;
-        return (
-          !cls.contains('react-flow__minimap') &&
-          !cls.contains('react-flow__controls') &&
-          !cls.contains('react-flow__attribution') &&
-          !cls.contains('react-flow__panel')
-        );
-      },
-    };
-
-    // Double-pass: first call warms up font/image loading, second produces clean output
-    toPng(flowViewport, exportOptions)
-      .then(() => toPng(flowViewport, exportOptions))
-      .then((dataUrl) => {
-        const a = document.createElement('a');
-        a.setAttribute('download', 'dex-flow-visualization.png');
-        a.setAttribute('href', dataUrl);
-        a.click();
+    try {
+      const res = await fetch("/api/optimize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sql: query, dialect }),
+        signal: controller.signal,
       });
-  }, [getNodes]);
 
-  const handleDownloadSVG = useCallback(() => {
-    if (reactFlowWrapper.current === null) return;
-    setExportMenuOpen(false);
+      const data = await res.json();
+      if (requestId !== optimizeRequestIdRef.current) {
+        return;
+      }
 
-    const allNodes = getNodes();
-    if (allNodes.length === 0) return;
+      if (!res.ok) {
+        setOptimizerError(data?.details || data?.error || "Failed to optimize query.");
+        return;
+      }
 
-    const nodeBounds = getNodesBounds(allNodes);
-    const padding = 100;
-    const imageWidth = nodeBounds.width + padding * 2;
-    const imageHeight = nodeBounds.height + padding * 2;
-    const viewport = getViewportForBounds(
-      nodeBounds,
-      imageWidth,
-      imageHeight,
-      1,
-      1,
-      padding
+      const nextResult: QueryOptimizationResult = {
+        optimizedSql: data.optimizedSql || query,
+        summary: data.summary || "Optimization completed.",
+        quality: data.quality === "poor" || data.quality === "fair" || data.quality === "good" ? data.quality : "fair",
+        shouldOptimize: Boolean(data.shouldOptimize),
+        riskFlags: Array.isArray(data.riskFlags) ? data.riskFlags.filter((flag: unknown) => typeof flag === "string") : [],
+        confidence: typeof data.confidence === "number" ? data.confidence : 0.6,
+        cached: Boolean(data.cached),
+        skippedLLM: Boolean(data.skippedLLM),
+      };
+      setOptimizerResult(nextResult);
+      lastOptimizedKeyRef.current = optimizeKey;
+    } catch (err) {
+      if (requestId !== optimizeRequestIdRef.current) {
+        return;
+      }
+      if (err instanceof DOMException && err.name === "AbortError") {
+        return;
+      }
+      const message = err instanceof Error ? err.message : "Network error while optimizing query.";
+      setOptimizerError(message);
+    } finally {
+      if (requestId === optimizeRequestIdRef.current) {
+        setOptimizerLoading(false);
+        optimizeAbortRef.current = null;
+      }
+    }
+  }, [dialect, optimizerError, optimizerResult, sql]);
+
+  const handleApplyOptimized = useCallback(() => {
+    const nextSql = optimizerResult?.optimizedSql?.trim();
+    if (!nextSql) return;
+    setSql(nextSql);
+    setCopiedOptimized(false);
+    setOptimizerError(null);
+    lastOptimizedKeyRef.current = createOptimizerKey(nextSql, dialect);
+    handleVisualize(nextSql);
+  }, [dialect, handleVisualize, optimizerResult?.optimizedSql]);
+
+  const handleCopyOptimized = useCallback(async () => {
+    if (!optimizerResult?.optimizedSql) return;
+    await navigator.clipboard.writeText(optimizerResult.optimizedSql);
+    setCopiedOptimized(true);
+    setTimeout(() => setCopiedOptimized(false), 1600);
+  }, [optimizerResult?.optimizedSql]);
+
+  const queryLooksRisky = useMemo(() => {
+    return (
+      sql.length > 550 ||
+      (sql.match(/\bjoin\b/gi)?.length ?? 0) >= 3 ||
+      /\bselect\s+\*/i.test(sql) ||
+      /\bwith\b/i.test(sql)
     );
-
-    const flowViewport = reactFlowWrapper.current.querySelector(
-      '.react-flow__viewport'
-    ) as HTMLElement;
-    if (!flowViewport) return;
-
-    toSvg(flowViewport, {
-      backgroundColor: '#0f172a',
-      width: imageWidth,
-      height: imageHeight,
-      style: {
-        width: `${imageWidth}px`,
-        height: `${imageHeight}px`,
-        transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
-      },
-      filter: (node: Element) => {
-        const cls = node.classList;
-        if (!cls) return true;
-        return (
-          !cls.contains('react-flow__minimap') &&
-          !cls.contains('react-flow__controls') &&
-          !cls.contains('react-flow__attribution') &&
-          !cls.contains('react-flow__panel')
-        );
-      },
-    }).then((dataUrl) => {
-      const a = document.createElement('a');
-      a.setAttribute('download', 'dex-flow-visualization.svg');
-      a.setAttribute('href', dataUrl);
-      a.click();
-    });
-  }, [getNodes]);
+  }, [sql]);
 
   /* ---- Share Link ---- */
   const handleShare = useCallback(async () => {
@@ -790,183 +420,6 @@ function FlowApp() {
     }
   }, [sql]);
 
-  /* ---- Main handler ---- */
-  const handleVisualize = useCallback(
-    async (overrideSql?: string) => {
-      const query = overrideSql ?? sql;
-      if (!query.trim()) return;
-
-      // Update URL for sharing using NATIVE browser API only.
-      // Never use Next.js router.push/replace — it triggers a full
-      // re-render cycle that causes infinite loops on iOS Safari.
-      // SKIP when triggered by URL load — the param was already stripped
-      // and re-injecting it causes the Safari crash loop.
-      if (isUrlTriggered.current) {
-        isUrlTriggered.current = false;
-      } else {
-        try {
-          // Guard: Mobile Safari crashes on extremely long URL states.
-          // Limit to ~2000 chars (safe threshold for most browsers).
-          const compressed = LZString.compressToEncodedURIComponent(query);
-          if (!isMobileSafari || compressed.length < 2000) {
-            window.history.replaceState(null, '', `?q=${compressed}`);
-          } else {
-             console.warn("[D3xTRverse] URL length excessive for mobile — skipping sync.");
-          }
-        } catch {
-          // Silently fail — URL sharing is non-critical
-        }
-      }
-
-      setLoading(true);
-      setStage("parsing");
-      setError(null);
-      setErrorDetails(null);
-      setToasterVisible(false);
-
-      // Clear previous graph
-      setNodes([]);
-      setEdges([]);
-      setHasResult(false);
-      nodeHeightsRef.current = new Map();
-      relayoutCountRef.current = 0; // Fresh visualization — allow relayout passes
-
-      try {
-        // Stage 1: Parse SQL → AST & NodeMap
-        const parseRes = await fetch("/api/parse", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sql: query.trim(), dialect }),
-        });
-
-        const parseData = await parseRes.json();
-
-        if (!parseRes.ok) {
-          const errMsg = parseData.details
-            ? `${parseData.error} — ${parseData.details}`
-            : (parseData.error || "Failed to parse SQL");
-          setError(errMsg);
-          setErrorDetails({ line: parseData.line, column: parseData.column });
-          setToasterVisible(true);
-          if (parseData.line) {
-            console.error(`[D3xTRverse Parser] Syntax error at line ${parseData.line}${parseData.column ? `, column ${parseData.column}` : ""}`);
-          }
-          setLoading(false);
-          setStage("idle");
-          return;
-        }
-
-        const { nodeMap } = parseData;
-
-        // Render immediately with empty explanations
-        const initialExplanations: Explanations = {};
-        for (const k of Object.keys(nodeMap)) {
-          initialExplanations[k] = ""; // Empty implies loading in UI
-        }
-
-        rawDataRef.current = { nodeMap, explanations: initialExplanations };
-        const { nodes: graphNodes, edges: graphEdges } = transformToGraph(
-          nodeMap,
-          initialExplanations,
-          handleExpandToggle,
-          handleHeightReport,
-          handleCteExpandToggle,
-          undefined,
-          isMobileSafari
-        );
-
-        setStage("rendering");
-        setNodes(graphNodes);
-        setEdges(graphEdges);
-        setHasResult(true);
-
-        // Auto-scroll to canvas on mobile/smaller screens to ensure visibility
-        setTimeout(() => {
-          if (window.innerWidth < 1024 && reactFlowWrapper.current) {
-            reactFlowWrapper.current.scrollIntoView({ behavior: "smooth", block: "start" });
-          }
-        }, 100);
-
-        // Stage 2: Explain AST via Groq Asynchronously
-        setStage("explaining");
-
-        fetch("/api/explain", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ nodeMap }),
-        })
-          .then(async (explainRes) => {
-            const explainData = await explainRes.json();
-            if (explainRes.ok) {
-              rawDataRef.current = { nodeMap, explanations: explainData.explanations };
-              const { nodes: updatedNodes, edges: updatedEdges } = transformToGraph(
-                nodeMap,
-                explainData.explanations,
-                handleExpandToggle,
-                handleHeightReport,
-                handleCteExpandToggle,
-                nodeHeightsRef.current,
-                isMobileSafari
-              );
-              setNodes(updatedNodes);
-              setEdges(updatedEdges);
-            } else {
-              setError(explainData.error || "Failed to generate explanations");
-              setToasterVisible(true);
-              const fallbackExplanations: Explanations = {};
-              for (const k of Object.keys(nodeMap)) {
-                fallbackExplanations[k] = "Explanation unavailable (API Error).";
-              }
-              rawDataRef.current = { nodeMap, explanations: fallbackExplanations };
-              const { nodes: updatedNodes, edges: updatedEdges } = transformToGraph(
-                nodeMap,
-                fallbackExplanations,
-                handleExpandToggle,
-                handleHeightReport,
-                handleCteExpandToggle,
-                nodeHeightsRef.current,
-                isMobileSafari
-              );
-              setNodes(updatedNodes);
-              setEdges(updatedEdges);
-            }
-          })
-          .catch((err) => {
-            setError(err.message || "Network error fetching explanations");
-            setToasterVisible(true);
-            const fallbackExplanations: Explanations = {};
-            for (const k of Object.keys(nodeMap)) {
-              fallbackExplanations[k] = "Explanation unavailable (Network Error).";
-            }
-            rawDataRef.current = { nodeMap, explanations: fallbackExplanations };
-            const { nodes: updatedNodes, edges: updatedEdges } = transformToGraph(
-              nodeMap,
-              fallbackExplanations,
-              handleExpandToggle,
-              handleHeightReport,
-              handleCteExpandToggle,
-              nodeHeightsRef.current,
-              isMobileSafari
-            );
-            setNodes(updatedNodes);
-            setEdges(updatedEdges);
-          })
-          .finally(() => {
-            setLoading(false);
-            setStage("idle");
-          });
-
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Network error";
-        setError(message);
-        setToasterVisible(true);
-        setLoading(false);
-        setStage("idle");
-      }
-    },
-    [sql, dialect, setNodes, setEdges, handleExpandToggle, handleHeightReport, handleCteExpandToggle, isMobileSafari]
-  );
-
   /* ---- Sample button handler ---- */
   const handleSample = useCallback(
     (sampleSql: string) => {
@@ -976,6 +429,11 @@ function FlowApp() {
     },
     [handleVisualize]
   );
+
+  const handleRunDiagnostics = useCallback(async () => {
+    const { runParserDiagnostics } = await import("@/utils/testParser");
+    runParserDiagnostics();
+  }, []);
 
   /* ---- Status label ---- */
   const stageLabel =
@@ -1553,7 +1011,9 @@ function FlowApp() {
                       value={sql}
                       onValueChange={(code) => {
                         setSql(code);
-                        if (hasResult) clearGraph();
+                        if (hasResult || optimizerResult || optimizerError) {
+                          clearResultsForEditing();
+                        }
                       }}
                       highlight={(code) => Prism.highlight(code, Prism.languages.sql, 'sql')}
                       padding={16}
@@ -1609,7 +1069,7 @@ function FlowApp() {
                 </AnimatePresence>
 
                 {/* Action buttons */}
-                <div className="mt-4 flex gap-3">
+                <div className="mt-4 flex flex-wrap gap-3">
                   <button
                     id="visualize-btn"
                     onClick={() => handleVisualize()}
@@ -1641,6 +1101,25 @@ function FlowApp() {
                   </button>
 
                   <button
+                    onClick={handleOptimizeQuery}
+                    disabled={optimizerLoading || loading || !sql.trim()}
+                    aria-label="Optimize Query"
+                    className="flex items-center gap-2 rounded-xl border border-cyan-500/30 bg-cyan-500/8 px-4 py-3 text-sm text-cyan-200 transition-all duration-200 hover:border-cyan-400/50 hover:bg-cyan-500/14 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {optimizerLoading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Optimizing...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="h-4 w-4" />
+                        AI Optimize
+                      </>
+                    )}
+                  </button>
+
+                  <button
                     onClick={clearGraph}
                     disabled={!hasResult && !sql.trim() && !error}
                     aria-label="Clear"
@@ -1650,6 +1129,129 @@ function FlowApp() {
                     Clear
                   </button>
                 </div>
+
+                {queryLooksRisky && !optimizerResult && !optimizerError && (
+                  <p className="mt-3 text-xs text-amber-300/80">
+                    Query looks complex. Run AI Optimize before executing in production.
+                  </p>
+                )}
+
+                <AnimatePresence>
+                  {(optimizerResult || optimizerError) && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8, height: 0 }}
+                      animate={{ opacity: 1, y: 0, height: "auto" }}
+                      exit={{ opacity: 0, y: -4, height: 0 }}
+                      transition={{ duration: 0.25 }}
+                      className="mt-4 overflow-hidden rounded-xl border border-cyan-500/20 bg-[rgba(14,30,40,0.55)]"
+                    >
+                      <div className="p-4">
+                        <div className="mb-3 flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Sparkles className="h-4 w-4 text-cyan-300" />
+                            <span className="text-xs font-semibold uppercase tracking-wider text-cyan-200">
+                              AI Optimizer
+                            </span>
+                          </div>
+                          {optimizerResult && (
+                            <span
+                              className="rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wider"
+                              style={{
+                                color:
+                                  optimizerResult.quality === "poor"
+                                    ? "#fca5a5"
+                                    : optimizerResult.quality === "fair"
+                                      ? "#fde68a"
+                                      : "#86efac",
+                                background:
+                                  optimizerResult.quality === "poor"
+                                    ? "rgba(239,68,68,0.14)"
+                                    : optimizerResult.quality === "fair"
+                                      ? "rgba(234,179,8,0.14)"
+                                      : "rgba(34,197,94,0.14)",
+                              }}
+                            >
+                              {optimizerResult.quality}
+                            </span>
+                          )}
+                        </div>
+
+                        {optimizerError && (
+                          <p className="text-sm text-red-300">{optimizerError}</p>
+                        )}
+
+                        {optimizerResult && (
+                          <>
+                            <p className="text-sm text-cyan-100/90 leading-relaxed">
+                              {optimizerResult.summary}
+                            </p>
+
+                            {(optimizerResult.cached || optimizerResult.skippedLLM) && (
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {optimizerResult.cached && (
+                                  <span className="rounded-md border border-cyan-400/30 bg-cyan-400/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-cyan-200">
+                                    Cache hit
+                                  </span>
+                                )}
+                                {optimizerResult.skippedLLM && (
+                                  <span className="rounded-md border border-emerald-400/30 bg-emerald-400/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-emerald-200">
+                                    LLM skipped
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
+                            {optimizerResult.shouldOptimize && (
+                              <p className="mt-2 text-xs text-amber-300">
+                                This query appears inefficient or risky. Optimize before production runs.
+                              </p>
+                            )}
+
+                            {optimizerResult.riskFlags.length > 0 && (
+                              <p className="mt-2 text-xs text-[var(--text-muted)]">
+                                Risks: {optimizerResult.riskFlags.slice(0, 3).join(" | ")}
+                              </p>
+                            )}
+
+                            <div className="mt-3 rounded-lg border border-[var(--border-subtle)] bg-[#0e1624]">
+                              <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-3 py-2">
+                                <span className="text-[11px] font-semibold uppercase tracking-widest text-[var(--text-muted)]">
+                                  Optimized SQL
+                                </span>
+                                <button
+                                  onClick={handleCopyOptimized}
+                                  className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] text-cyan-200 hover:bg-cyan-500/10"
+                                >
+                                  {copiedOptimized ? <Check size={12} /> : <Copy size={12} />}
+                                  {copiedOptimized ? "Copied" : "Copy"}
+                                </button>
+                              </div>
+                              <pre className="max-h-56 overflow-auto p-3 text-xs leading-relaxed text-slate-200 whitespace-pre-wrap">
+                                {optimizerResult.optimizedSql}
+                              </pre>
+                            </div>
+
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button
+                                onClick={handleApplyOptimized}
+                                disabled={loading || !optimizerResult.optimizedSql.trim()}
+                                className="flex items-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-cyan-200 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                              >
+                                <Braces className="h-3.5 w-3.5" />
+                                Apply + Visualize
+                              </button>
+                            </div>
+
+                            <p className="mt-3 text-xs text-[var(--text-muted)] leading-relaxed">
+                              Note: AI optimization can make mistakes. Always validate results, compare execution plans,
+                              and test before shipping to production.
+                            </p>
+                          </>
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
             </div>
 
@@ -1736,64 +1338,16 @@ function FlowApp() {
                 </div>
               )}
 
-              {hasResult ? (
-                <div
-                  ref={reactFlowWrapper}
-                  className="w-full h-[65vh] min-h-[500px] md:h-auto md:flex-1 relative border rounded-2xl overflow-hidden flex flex-col"
-                  style={{
-                    borderColor: "var(--border-accent)",
-                    background: "var(--bg-secondary)",
-                  }}
-                >
-                  <ReactFlow
-                    nodes={nodes}
-                    edges={edges}
-                    onNodesChange={onNodesChange}
-                    onEdgesChange={onEdgesChange}
-                    onNodeClick={handleNodeClick}
-                    onPaneClick={handlePaneClick}
-                    nodeTypes={nodeTypes}
-                    proOptions={proOptions}
-                    connectionLineType={ConnectionLineType.SmoothStep}
-                    fitView
-                    fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
-                    minZoom={0.1}
-                    maxZoom={2}
-                    panOnScroll={true}
-                    preventScrolling={false} // Allow natural page scrolling over canvas on mobile
-                    zoomOnScroll={false}
-                    zoomOnPinch={true}
-                    zoomOnDoubleClick={false}
-                  >
-                    <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#333" />
-                    <Controls className="dark:bg-gray-800 dark:border-gray-700 dark:fill-white" />
-                    <MiniMap className="hidden md:block dark:bg-gray-900" nodeColor="#4f46e5" />
-                  </ReactFlow>
-                </div>
-              ) : (
-                <div
-                  id="canvas-placeholder"
-                  className="flex w-full h-[65vh] min-h-[500px] md:h-auto md:flex-1 items-center justify-center rounded-2xl border-2 border-dashed transition-colors duration-300"
-                  style={{
-                    borderColor: "var(--border-subtle)",
-                    background: "var(--bg-secondary)",
-                  }}
-                >
-                  <div className="text-center">
-                    <Braces
-                      className="mx-auto mb-3 h-10 w-10"
-                      style={{ color: "var(--text-muted)" }}
-                      strokeWidth={1}
-                    />
-                    <p className="text-sm text-[var(--text-muted)]">
-                      Your query visualization will appear here
-                    </p>
-                    <p className="mt-1 text-xs text-[var(--text-muted)] opacity-60">
-                      Try a sample above or paste your own SQL
-                    </p>
-                  </div>
-                </div>
-              )}
+              <GraphCanvas
+                hasResult={hasResult}
+                nodes={nodes}
+                edges={edges}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onNodeClick={handleNodeClick}
+                onPaneClick={handlePaneClick}
+                reactFlowWrapper={reactFlowWrapper}
+              />
             </div>
           </div>
         </section>
@@ -1827,7 +1381,7 @@ function FlowApp() {
             View on GitHub
           </a>
           <button
-            onClick={runParserDiagnostics}
+            onClick={handleRunDiagnostics}
             className="text-[10px] text-[var(--text-muted)] opacity-20 hover:opacity-100 transition-opacity bg-transparent border-none cursor-pointer"
           >
             Run Diagnostics

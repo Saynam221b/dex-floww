@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useState, useEffect, useRef, useCallback } from "react";
+import { memo, useEffect, useRef, useCallback, useState } from "react";
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -28,6 +28,7 @@ export interface SqlNodeData {
   onExpandToggle?: (nodeId: string, expanded: boolean) => void;
   onHeightReport?: (nodeId: string, height: number) => void;
   nodeId?: string;
+  expanded?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -100,8 +101,7 @@ function SqlNodeComponent({ data, id }: NodeProps) {
   const Icon = icon;
   const isCte = d.label.startsWith("[");
   const updateNodeInternals = useUpdateNodeInternals();
-
-  const [expanded, setExpanded] = useState(false);
+  const expanded = Boolean(d.expanded);
 
   /* ── ELI5 state ── */
   const [eli5Text, setEli5Text] = useState<string | null>(null);
@@ -176,16 +176,15 @@ function SqlNodeComponent({ data, id }: NodeProps) {
 
   const handleToggle = () => {
     const next = !expanded;
-    setExpanded(next);
-    if (!next) {
-      // Reset ELI5 state when collapsing
+    d.onExpandToggle?.(id, next);
+  };
+
+  useEffect(() => {
+    if (!expanded) {
       setEli5Text(null);
       setIsDeepThinking(false);
     }
-    if (d.onExpandToggle) {
-      d.onExpandToggle(id, next);
-    }
-  };
+  }, [expanded]);
 
   return (
     <div
@@ -443,6 +442,7 @@ function SqlNodeComponent({ data, id }: NodeProps) {
                         e.stopPropagation();
                         handleELI5();
                       }}
+                      aria-label="Simplify explanation with example"
                       style={{
                         pointerEvents: "auto",
                         display: "flex",
@@ -463,19 +463,6 @@ function SqlNodeComponent({ data, id }: NodeProps) {
                         textTransform: "uppercase",
                         transition: "all 0.25s ease",
                         outline: "none",
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.borderColor = "rgba(139, 92, 246, 0.5)";
-                        e.currentTarget.style.background =
-                          "linear-gradient(135deg, rgba(139, 92, 246, 0.14), rgba(99, 102, 241, 0.08))";
-                        e.currentTarget.style.boxShadow =
-                          "0 0 16px rgba(139, 92, 246, 0.15)";
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.borderColor = "rgba(139, 92, 246, 0.25)";
-                        e.currentTarget.style.background =
-                          "linear-gradient(135deg, rgba(139, 92, 246, 0.08), rgba(99, 102, 241, 0.04))";
-                        e.currentTarget.style.boxShadow = "none";
                       }}
                     >
                       <Lightbulb size={11} />

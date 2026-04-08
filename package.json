@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --experimental-strip-types --test tests/unit/*.test.ts",
+    "test:integration": "node --experimental-strip-types --test tests/integration/*.test.ts",
+    "test:e2e": "node --experimental-strip-types --test tests/e2e/*.test.ts",
+    "test:perf-smoke": "node --experimental-strip-types scripts/perf-smoke.ts"
   },
   "dependencies": {
     "@types/dagre": "^0.7.54",

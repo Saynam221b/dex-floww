@@ -71,11 +71,12 @@ export function runParserDiagnostics() {
 
       // Check for raw JSON leakage
       for (const [key, value] of Object.entries(flattened)) {
-        if (typeof value !== "string") {
-            throw new Error(`Non-string value found at ${key}`);
+        if (!value || typeof value !== "object" || typeof value.sql !== "string") {
+          throw new Error(`Invalid flattened node at ${key}`);
         }
-        if (value.includes('{"') || value.includes('[{')) {
-            throw new Error(`Raw JSON detected in node ${key}: ${value}`);
+        const sqlText = value.sql;
+        if (sqlText.includes('{"') || sqlText.includes('[{')) {
+          throw new Error(`Raw JSON detected in node ${key}: ${sqlText}`);
         }
       }
       passed++;
