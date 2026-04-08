@@ -474,6 +474,7 @@ function FlowApp() {
         // Try lz-string first, fallback to legacy base64
         const decoded = LZString.decompressFromEncodedURIComponent(q) || atob(q);
         setSql(decoded);
+        setChaosCleared(true);
         setTimeout(() => handleVisualize(decoded), 100);
       } catch (e) {
         console.error("Failed to decode query from URL", e);
@@ -1286,7 +1287,7 @@ function FlowApp() {
         {/* ════════════════════════════════════════════════════════════ */}
         <section
           id="workspace"
-          className="workspace-section flex flex-1 flex-col items-center px-4 pt-12 pb-6 sm:px-6 lg:px-8"
+          className={`workspace-section flex-1 flex-col items-center px-4 pt-12 pb-6 sm:px-6 lg:px-8 ${chaosCleared ? "flex" : "hidden"}`}
         >
           {/* ── Ambient background elements ── */}
           <div className="ws-glow ws-glow--indigo" />
