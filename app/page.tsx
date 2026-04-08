@@ -1,7 +1,9 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, useScroll, useMotionValueEvent } from "framer-motion";
+
+
 import SplashScreen from "@/components/SplashScreen";
 import DialectSelector from "@/components/DialectSelector";
 import {
@@ -157,6 +159,27 @@ function FlowApp() {
   const [showCreatorModal, setShowCreatorModal] = useState(false);
   const [dialect, setDialect] = useState("Standard SQL");
   const [optimizerLoading, setOptimizerLoading] = useState(false);
+
+  // Scroll logic for morphing navbar
+  const { scrollY } = useScroll();
+  const [navVisible, setNavVisible] = useState(true);
+  const [isScrolled, setIsScrolled] = useState(false);
+  const lastScrollY = useRef(0);
+
+  useMotionValueEvent(scrollY, "change", (latest) => {
+    // Determine scroll direction for smart hide
+    // Hide slightly earlier (after 60px down) for a cleaner feel
+    if (latest > lastScrollY.current && latest > 60) {
+      setNavVisible(false);
+    } else {
+      setNavVisible(true);
+    }
+    
+    // Determine if scrolled for transparency morph
+    setIsScrolled(latest > 10);
+    lastScrollY.current = latest;
+  });
+
   const [optimizerError, setOptimizerError] = useState<string | null>(null);
   const [optimizerResult, setOptimizerResult] = useState<QueryOptimizationResult | null>(null);
   const optimizeRequestIdRef = useRef(0);
@@ -458,49 +481,83 @@ function FlowApp() {
         animate={{ opacity: showSplash ? 0 : 1 }}
         transition={{ duration: 0.6, ease: "easeOut" }}
       >
-        <nav className="flex w-full items-center justify-between px-4 pt-6 sm:pt-4 md:px-8 md:pt-6 relative z-[70]">
-          {/* Left: Go Home (visible when workspace is shown) */}
-          <AnimatePresence>
-            {chaosCleared && (
+        {/* ── Morphing Navbar ── */}
+        <nav className="pointer-events-none fixed inset-x-0 top-0 z-[100] flex justify-center px-3 pt-4 sm:px-6 sm:pt-6">
+          <motion.div
+            animate={{
+              y: navVisible ? 0 : -120,
+              opacity: navVisible ? 1 : 0,
+              scale: navVisible ? 1 : 0.95,
+            }}
+            transition={{ type: "spring", stiffness: 250, damping: 28, mass: 0.8 }}
+            className={`pointer-events-auto flex w-full items-center justify-between rounded-[2rem] border transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+              isScrolled
+                ? "max-w-4xl gap-3 px-4 py-3 sm:px-5 sm:py-3 border-white/[0.08] bg-[#0b0f19]/85 shadow-[0_8px_32px_rgba(0,0,0,0.4)] backdrop-blur-2xl"
+                : "max-w-7xl gap-4 px-4 py-4 sm:px-4 sm:py-5 border-transparent bg-transparent shadow-none"
+            }`}
+          >
+            {/* Logo and Title (Fades in on scroll to prevent dupes) */}
+            <div
+              className={`flex min-w-0 items-center gap-3 sm:gap-4 transition-all duration-500 ${
+                isScrolled ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-4 pointer-events-none"
+              }`}
+            >
+              <motion.div
+                className="group relative flex h-8 w-8 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-[14px] sm:rounded-2xl bg-gradient-to-b from-indigo-500/20 to-violet-500/10 border border-indigo-500/20 shadow-[inset_0_1px_0_rgba(255,255,255,0.1)]"
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                transition={{ type: "spring", stiffness: 400, damping: 30 }}
+              >
+                <div className="absolute inset-0 rounded-[14px] sm:rounded-2xl bg-indigo-400/20 blur-xl opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+                <Braces className="relative z-10 h-4 w-4 sm:h-5 sm:w-5 text-indigo-300 transition-colors duration-300 group-hover:text-white" strokeWidth={2.2} />
+              </motion.div>
+              <div className="min-w-0 flex flex-col justify-center">
+                <div className="truncate text-sm sm:text-[15px] font-semibold tracking-tight text-white/90">
+                  D3xTRverse
+                </div>
+                <div className="hidden pt-0.5 text-[10px] font-medium uppercase tracking-[0.2em] text-indigo-300/50 sm:block">
+                  SQL Lineage Studio
+                </div>
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-2.5">
+              <AnimatePresence mode="wait">
+                {chaosCleared && (
+                  <motion.button
+                    key="go-home"
+                    onClick={() => setChaosCleared(false)}
+                    className="inline-flex h-9 items-center gap-2 rounded-full bg-white/[0.03] px-3.5 text-[12px] font-medium text-white/70 border border-white/[0.05] transition-all hover:bg-white/[0.08] hover:text-white sm:px-4"
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -10 }}
+                    whileTap={{ scale: 0.96 }}
+                  >
+                    <HomeIcon className="h-3.5 w-3.5 opacity-70" />
+                    <span className="hidden sm:inline">Back</span>
+                    <span className="sm:hidden">Home</span>
+                  </motion.button>
+                )}
+              </AnimatePresence>
+
               <motion.button
-                key="go-home"
-                onClick={() => setChaosCleared(false)}
-                className="flex items-center gap-2 rounded-full border border-indigo-400/50 px-5 py-2.5 text-[11px] sm:text-xs font-bold uppercase tracking-widest text-indigo-100 cursor-pointer backdrop-blur-xl"
-                style={{
-                  background: "rgba(18,20,30,0.85)",
-                  boxShadow: "0 0 20px rgba(99,102,241,0.25)",
-                }}
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -20 }}
-                transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-                whileHover={{ scale: 1.05, boxShadow: "0 0 30px rgba(99,102,241,0.45)" }}
+                onClick={() => setShowCreatorModal(true)}
+                className={`inline-flex h-9 items-center gap-2 rounded-full px-3.5 text-[12px] font-medium transition-all sm:px-4 ${
+                  isScrolled
+                    ? "bg-white/[0.05] text-white/80 border border-white/[0.08] hover:bg-white/[0.1] hover:text-white"
+                    : "bg-indigo-500/10 text-indigo-200 border border-indigo-500/20 hover:bg-indigo-500/20 hover:text-white"
+                }`}
                 whileTap={{ scale: 0.96 }}
               >
-                <HomeIcon className="h-4 w-4 text-indigo-300" />
-                <span>Go Home</span>
+                <User className="h-3.5 w-3.5 opacity-80" />
+                <span>Creator</span>
               </motion.button>
-            )}
-          </AnimatePresence>
-
-          {/* Right: Meet the Creator */}
-          <motion.button
-            onClick={() => setShowCreatorModal(true)}
-            className="flex items-center gap-2 rounded-full border border-indigo-400/50 px-5 py-2.5 text-[11px] sm:text-xs font-bold uppercase tracking-widest text-indigo-100 cursor-pointer backdrop-blur-xl ml-auto"
-            style={{
-              background: "rgba(18,20,30,0.85)",
-              boxShadow: "0 0 20px rgba(99,102,241,0.25)",
-            }}
-            initial={{ opacity: 0, y: -12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 2.8, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-            whileHover={{ scale: 1.05, boxShadow: "0 0 30px rgba(99,102,241,0.45)" }}
-            whileTap={{ scale: 0.96 }}
-          >
-            <User className="h-4 w-4 text-indigo-300" />
-            <span>Meet the Creator</span>
-          </motion.button>
+            </div>
+          </motion.div>
         </nav>
+
+
+
 
         {/* ── Creator Modal Overlay ── */}
         <AnimatePresence>
@@ -1258,25 +1315,8 @@ function FlowApp() {
 
             {/* ── Right: React Flow Canvas ── */}
             <div className="w-full flex-1 flex flex-col relative" id="flow-canvas-container">
-
-
               {hasResult && (
-                <div className="absolute top-4 right-4 z-10 flex gap-2">
-                  <button
-                    onClick={() => handleToggleAll(true)}
-                    className="p-2.5 rounded-lg bg-[rgba(18,20,30,0.8)] border border-[rgba(255,255,255,0.1)] text-gray-300 hover:text-white hover:bg-[rgba(255,255,255,0.1)] transition-colors backdrop-blur-md"
-                    title="Expand All"
-                  >
-                    <Maximize2 size={16} />
-                  </button>
-                  <button
-                    onClick={() => handleToggleAll(false)}
-                    className="p-2.5 rounded-lg bg-[rgba(18,20,30,0.8)] border border-[rgba(255,255,255,0.1)] text-gray-300 hover:text-white hover:bg-[rgba(255,255,255,0.1)] transition-colors backdrop-blur-md"
-                    title="Collapse All"
-                  >
-                    <Minimize2 size={16} />
-                  </button>
-                  <div className="w-px h-6 bg-[rgba(255,255,255,0.1)] self-center mx-1" />
+                <div className="absolute top-4 right-4 z-[50] flex items-center gap-2">
                   <button
                     onClick={handleShare}
                     className="p-2.5 rounded-lg bg-[rgba(18,20,30,0.8)] border border-[rgba(255,255,255,0.1)] text-gray-300 hover:text-white hover:bg-[rgba(255,255,255,0.1)] transition-colors backdrop-blur-md flex items-center gap-2"
@@ -1285,7 +1325,7 @@ function FlowApp() {
                     <Share2 size={16} />
                     {copiedLink && <span className="text-[10px] font-bold tracking-wider absolute -bottom-6 left-1/2 -translate-x-1/2 text-emerald-400">COPIED</span>}
                   </button>
-                  {/* Download PNG — prominent primary action */}
+                  
                   <button
                     onClick={handleDownloadPNG}
                     aria-label="Download PNG"
@@ -1297,14 +1337,6 @@ function FlowApp() {
                       boxShadow: "0 0 16px rgba(99,102,241,0.15)",
                     }}
                     title="Download PNG"
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = "rgba(99,102,241,0.22)";
-                      e.currentTarget.style.boxShadow = "0 0 24px rgba(99,102,241,0.3)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = "rgba(99,102,241,0.12)";
-                      e.currentTarget.style.boxShadow = "0 0 16px rgba(99,102,241,0.15)";
-                    }}
                   >
                     <Download size={14} />
                     <span className="hidden sm:inline">PNG</span>
@@ -1313,12 +1345,11 @@ function FlowApp() {
                   <div className="relative">
                     <button
                       onClick={() => setExportMenuOpen(!exportMenuOpen)}
-                      className="p-2.5 rounded-lg bg-[rgba(18,20,30,0.8)] border border-[rgba(255,255,255,0.1)] text-gray-300 hover:text-white hover:bg-[rgba(255,255,255,0.1)] transition-colors backdrop-blur-md flex items-center gap-1.5"
-                      title="More Export Options"
+                      className="p-2.5 rounded-lg bg-[rgba(18,20,30,0.8)] border border-[rgba(255,255,255,0.1)] text-gray-300 hover:text-white hover:bg-[rgba(255,255,255,0.1)] transition-colors backdrop-blur-md"
+                      title="More Exports"
                     >
-                      <ChevronDown size={14} className="opacity-70" />
+                      <ChevronDown size={16} />
                     </button>
-
                     {exportMenuOpen && (
                       <div className="absolute right-0 mt-2 w-48 rounded-xl border border-[rgba(255,255,255,0.1)] bg-[#1a1c28] p-1.5 shadow-2xl backdrop-blur-xl z-50">
                         <button
@@ -1351,18 +1382,49 @@ function FlowApp() {
               />
 
               {hasResult && (
-                <div className="absolute top-4 left-4 z-[50]">
+                <div className="absolute top-4 left-4 z-[50] flex items-center gap-2">
                   <motion.button
                     onClick={handleFormat}
-                    className="flex items-center gap-2 rounded-lg border border-indigo-400/30 bg-[#0a0b10]/80 px-4 py-2 text-[10px] font-black uppercase tracking-[0.15em] text-indigo-100 backdrop-blur-xl transition-all hover:bg-indigo-500/10 hover:border-indigo-400/60 shadow-[0_0_20px_rgba(0,0,0,0.4)]"
-                    whileHover={{ scale: 1.05, boxShadow: "0 0 25px rgba(99,102,241,0.2)" }}
+                    className="flex items-center gap-2 rounded-lg border border-indigo-400/30 bg-[#0a0b10]/80 px-3 sm:px-4 py-2 text-[10px] font-black uppercase tracking-[0.15em] text-indigo-100 backdrop-blur-xl transition-all hover:bg-indigo-500/10 hover:border-indigo-400/60 shadow-[0_0_20px_rgba(0,0,0,0.4)]"
+                    whileHover={{ scale: 1.05, boxShadow: "0_0_25px_rgba(99,102,241,0.2)" }}
                     whileTap={{ scale: 0.95 }}
+                    title="Format Layout"
                   >
                     <Zap className="h-3 w-3 text-indigo-400" />
-                    Format Layout
+                    <span className="hidden sm:inline">Format</span>
                   </motion.button>
+
+
+                  <div className="h-4 w-px bg-indigo-500/20" />
+
+                  <motion.button
+                    onClick={() => handleToggleAll(true)}
+                    className="flex items-center gap-2 rounded-lg border border-indigo-400/30 bg-[#0a0b10]/80 px-2 sm:px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-indigo-200 backdrop-blur-xl transition-all hover:bg-indigo-500/10 hover:border-indigo-400/60"
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    title="Expand All"
+                  >
+                    <Maximize2 className="h-3 w-3" />
+                    <span className="hidden md:inline">Expand All</span>
+                    <span className="hidden sm:inline md:hidden">Expand</span>
+                  </motion.button>
+
+
+                  <motion.button
+                    onClick={() => handleToggleAll(false)}
+                    className="flex items-center gap-2 rounded-lg border border-indigo-400/30 bg-[#0a0b10]/80 px-2 sm:px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-indigo-200 backdrop-blur-xl transition-all hover:bg-indigo-500/10 hover:border-indigo-400/60"
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    title="Collapse All"
+                  >
+                    <Minimize2 className="h-3 w-3" />
+                    <span className="hidden md:inline">Collapse All</span>
+                    <span className="hidden sm:inline md:hidden">Collapse</span>
+                  </motion.button>
+
                 </div>
               )}
+
             </div>
           </div>
         </section>

@@ -42,12 +42,14 @@ export interface GraphModel {
 export type NodeMapValue =
   | string
   | {
-      sql?: unknown;
-      parentId?: unknown;
-      isGroup?: unknown;
-      label?: unknown;
-      isExpanded?: unknown;
+      sql?: string;
+      parentId?: string;
+      isGroup?: boolean;
+      label?: string;
+      cteName?: string;
+      isExpanded?: boolean;
     };
+
 
 export type NodeMapInput = Record<string, NodeMapValue>;
 
@@ -180,7 +182,9 @@ export function buildGraphModel(nodeMap: NodeMapInput): GraphModel {
   for (const [id, raw] of Object.entries(nodeMap)) {
     const isGroup = typeof raw === "object" && raw !== null && "isGroup" in raw && raw.isGroup;
     if (isGroup) {
-      const cteName = (raw as any).cteName || (raw as any).label;
+      const g = raw as { cteName?: string; label?: string };
+      const cteName = g.cteName || g.label;
+
       if (cteName) {
         cteGroupMap.set(id, cteName);
       }

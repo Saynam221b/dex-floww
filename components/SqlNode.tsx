@@ -99,8 +99,8 @@ function SqlNodeComponent({ data, id }: NodeProps) {
   const config = OPERATION_CONFIG[d.operationType] ?? DEFAULT_CONFIG;
   const icon = config.icon;
   const Icon = icon;
-  const isCte = d.label.startsWith("[");
   const updateNodeInternals = useUpdateNodeInternals();
+
   const expanded = Boolean(d.expanded);
 
   /* ── ELI5 state ── */

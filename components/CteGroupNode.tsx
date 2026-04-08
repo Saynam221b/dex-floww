@@ -26,6 +26,29 @@ export function CteGroupNode({ data }: { data: { label: string; isExpanded?: boo
       <div className="absolute -bottom-1 -left-1 w-3 h-3 border-b-2 border-l-2 border-indigo-500/60 rounded-bl-sm pointer-events-none" />
       <div className="absolute -bottom-1 -right-1 w-3 h-3 border-b-2 border-r-2 border-indigo-500/60 rounded-br-sm pointer-events-none" />
 
+      {/* Hover Instruction (Only when collapsed) */}
+      {!expanded && (
+        <motion.div 
+          initial={{ opacity: 0 }}
+          whileHover={{ opacity: 1 }}
+          className="absolute inset-x-0 -bottom-8 flex justify-center pointer-events-none"
+        >
+          <div className="px-3 py-1 rounded-full bg-indigo-500/20 border border-indigo-500/40 text-[9px] font-bold text-indigo-300 backdrop-blur-md whitespace-nowrap">
+            Click &apos;Explore CTE&apos; to view logic
+          </div>
+        </motion.div>
+      )}
+
+      {/* Pulsing visual for collapsed state to signpost interactivity */}
+      {!expanded && (
+        <motion.div
+          animate={{ opacity: [0.3, 0.6, 0.3], scale: [0.98, 1.02, 0.98] }}
+          transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+          className="absolute inset-0 border border-indigo-500/20 rounded-2xl pointer-events-none"
+        />
+      )}
+
+
       {/* Cyber Grid Background (only when expanded) */}
       <AnimatePresence>
         {expanded && (
@@ -43,23 +66,34 @@ export function CteGroupNode({ data }: { data: { label: string; isExpanded?: boo
       </AnimatePresence>
 
       <div 
-        className="absolute flex items-center gap-2 top-0 left-6 -translate-y-1/2 px-4 py-1.5 text-[10px] font-black tracking-widest uppercase text-indigo-400 rounded-full border border-indigo-500/30 shadow-xl backdrop-blur-md"
+        className="absolute flex items-center gap-1.5 top-0 left-6 -translate-y-1/2 px-0 py-0 overflow-hidden rounded-full border border-indigo-500/30 shadow-2xl backdrop-blur-xl"
         style={{
           background: "linear-gradient(135deg, #0f172a, #1e1b4b)",
         }}
       >
-        <Binary size={12} className="text-indigo-500" />
-        <span>CTE: {data.label}</span>
+        <div className="flex items-center gap-2 pl-4 pr-2 py-1.5 border-r border-indigo-500/20">
+          <Binary size={12} className="text-indigo-400" />
+          <span className="text-[10px] font-black tracking-widest uppercase text-indigo-100/90 whitespace-nowrap">
+            CTE: {data.label}
+          </span>
+        </div>
+        
         <button
-          className="ml-2 hover:bg-white/10 p-0.5 rounded-full transition-colors"
+          className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-indigo-500/20 active:bg-indigo-500/30 transition-all group/expand"
           onClick={(e) => {
             e.stopPropagation();
             data.onCteExpandToggle?.(data.nodeId, !expanded);
           }}
         >
-          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <span className="text-[9px] font-extrabold uppercase tracking-tighter text-indigo-300 group-hover/expand:text-indigo-100 transition-colors">
+            {expanded ? "Collapse Content" : "Explore CTE"}
+          </span>
+          <div className="text-indigo-400 group-hover/expand:translate-x-0.5 transition-transform">
+            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </div>
         </button>
       </div>
+
 
       {/* Invisible handles for React Flow wiring */}
       <Handle type="target" position={Position.Left} className="opacity-0" isConnectable={false} />

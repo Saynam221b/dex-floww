@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect, type RefObject, type MouseEvent as ReactMouseEvent } from "react";
+import { useState, useCallback, useRef, type RefObject, type MouseEvent as ReactMouseEvent } from "react";
+
 import { useNodesState, useEdgesState, useReactFlow, type Node, type Edge } from "@xyflow/react";
 import LZString from "lz-string";
 import {
@@ -136,14 +137,20 @@ export function useSqlVisualization({
 
       const { nodeMap, explanations } = rawDataRef.current;
       const nextExpanded = new Set<string>();
-      if (expand) {
-        for (const [id, value] of Object.entries(nodeMap)) {
-          if (value && typeof value === "object" && !value.isGroup) {
-            nextExpanded.add(id);
+      
+      // Update the nodeMap entries for CTE groups if needed
+      for (const [id, value] of Object.entries(nodeMap)) {
+        if (value && typeof value === "object") {
+          if (value.isGroup) {
+            value.isExpanded = expand;
+          } else {
+            if (expand) nextExpanded.add(id);
           }
         }
       }
+      
       expandedNodeIdsRef.current = nextExpanded;
+
 
       const { nodes: layoutedNodes, edges: layoutedEdges } = transformToGraph(
         nodeMap,

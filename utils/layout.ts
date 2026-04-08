@@ -109,7 +109,8 @@ export function getLayoutedElements(
 
   // 4. REGISTER VISIBLE NODES WITH RANKS
   for (const node of visibleNodes) {
-    const nodeType = (node.data as any)?.nodeType as string || "unknown";
+    const nodeType = (node.data as { nodeType?: string })?.nodeType || "unknown";
+
     const rank = RANK_MAP[nodeType] ?? 5;
 
     if (node.type === "cteGroup") {

@@ -19,11 +19,14 @@
 ## 🚀 Core Capabilities
 
 *   **🎯 Deterministic AST Parsing:** 100% accurate node relationships. Handles complex `JOIN` logic, parallel `CTE`s, `UNION`s, and deeply nested subqueries with a rigorous AST-to-Graph pipeline backed by `node-sql-parser`.
+*   **🛣️ Semantic Lane Layout:** Automatically organizes logic into intuitive columns (FROM → JOIN → GROUPBY → SELECT) using a rank-based DAG engine, ensuring structural clarity for massive queries.
 *   **🧠 Deterministic-First Insights:** Every node gets a heuristic baseline explanation instantly; Groq enrichment is optional for low-confidence nodes.
 *   **👶 ELI5 Mode:** Hit the "Explain Like I'm 5" button on any complex node to fetch a real-world analogy for the underlying SQL logic. 
+*   **✨ GlowEdge™ Animated Lineage:** Custom edge system with animated neon pulses that visualize data movement. Clicking any node triggers a cinematic highlight of its full upstream and downstream path.
 *   **📤 Frictionless State Syncing:** Your entire query state is encoded directly into the URL using `lz-string`. Just copy the link and share your exact workspace state with your team—no backend storage required.
 *   **📸 High-Res Canvas Export:** 1-click PNG/SVG export of the DAG for technical documentation or PR descriptions.
-*   **🎮 Premium Cyberpunk Environment:** Built with a dark "Classy Modern Gaming" aesthetic. Features **Monaco/CodeMirror** integration, glassmorphic node styling, ambient glow fields, and **Framer Motion** for precise state transitions.
+*   **🎮 Premium Command Center:** A "Classy Modern Gaming" aesthetic with unified toolbar controls (Format, Expand/Collapse All), glassmorphic node styling, and high-affordance CTE interactions.
+
 
 ---
 
