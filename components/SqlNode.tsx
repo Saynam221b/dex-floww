@@ -137,9 +137,6 @@ function SqlNodeComponent({ data, id }: NodeProps) {
     observer.observe(el);
     return () => observer.disconnect();
     // Intentionally stable deps — refs handle the mutable values.
-    // Including `d` here would reconnect the observer every render,
-    // causing an infinite loop on iOS Safari.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [updateNodeInternals]);
 
   /* Cycle through fake messages while thinking */

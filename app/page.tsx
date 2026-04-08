@@ -308,7 +308,7 @@ function transformToGraph(
       currentLayerIds.push(id);
 
       const parentNode = item.parentId ? nodeMap[item.parentId] : null;
-      const parentLabel = (typeof parentNode === "object" && parentNode !== null) ? (parentNode as any).label : null;
+      const parentLabel = (typeof parentNode === "object" && parentNode !== null) ? (parentNode as { label: string }).label : null;
 
       const nodeData: SqlNodeData = {
         label: isMobileSafari && parentLabel 
@@ -345,7 +345,7 @@ function transformToGraph(
             target: targetId,
             type: "smoothstep",
             animated: false,
-            // @ts-ignore - pathOptions is valid for smoothstep but not typed in generic Edge
+            // @ts-expect-error - pathOptions is valid for smoothstep but not typed in generic Edge
             pathOptions: { borderRadius: 24 },
             data: {
               originalColor: EDGE_COLORS[sourceOpType] ?? "#6366f1",
@@ -640,7 +640,7 @@ function FlowApp() {
     );
     setNodes(layoutedNodes);
     setEdges(layoutedEdges);
-  }, [setNodes, setEdges, handleExpandToggle, handleHeightReport]);
+  }, [setNodes, setEdges, handleExpandToggle, handleHeightReport, handleCteExpandToggle, isMobileSafari]);
 
   /* ---- Full-Canvas Export (High-Quality) ---- */
   const handleDownloadPNG = useCallback(() => {
@@ -964,7 +964,7 @@ function FlowApp() {
         setStage("idle");
       }
     },
-    [sql, dialect, setNodes, setEdges, handleExpandToggle, handleHeightReport]
+    [sql, dialect, setNodes, setEdges, handleExpandToggle, handleHeightReport, handleCteExpandToggle, isMobileSafari]
   );
 
   /* ---- Sample button handler ---- */

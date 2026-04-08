@@ -11,7 +11,7 @@ interface LogPayload {
   level: LogLevel;
   timestamp: string;
   requestId?: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
   error?: {
     message: string;
     stack?: string;
@@ -20,29 +20,29 @@ interface LogPayload {
 }
 
 export const logger = {
-  info(message: string, source: string, metadata?: Record<string, any>) {
+  info(message: string, source: string, metadata?: Record<string, unknown>) {
     this._log("info", message, source, metadata);
   },
 
-  warn(message: string, source: string, metadata?: Record<string, any>) {
+  warn(message: string, source: string, metadata?: Record<string, unknown>) {
     this._log("warn", message, source, metadata);
   },
 
-  error(message: string, source: string, error?: unknown, metadata?: Record<string, any>) {
+  error(message: string, source: string, error?: unknown, metadata?: Record<string, unknown>) {
     const errorPayload = error instanceof Error 
       ? { message: error.message, stack: error.stack }
       : error ? { message: String(error) } : undefined;
       
-    this._log("error", message, source, { ...metadata, error: errorPayload });
+    this._log("error", message, source, { ...metadata, error: errorPayload } as Record<string, unknown>);
   },
 
-  debug(message: string, source: string, metadata?: Record<string, any>) {
+  debug(message: string, source: string, metadata?: Record<string, unknown>) {
     if (process.env.NODE_ENV === "development") {
       this._log("debug", message, source, metadata);
     }
   },
 
-  _log(level: LogLevel, message: string, source: string, metadata?: Record<string, any>) {
+  _log(level: LogLevel, message: string, source: string, metadata?: Record<string, unknown>) {
     const payload: LogPayload = {
       timestamp: new Date().toISOString(),
       level,
@@ -53,8 +53,10 @@ export const logger = {
 
     // Include Error specifically if provided in metadata (from error() call)
     if (metadata?.error) {
-      payload.error = metadata.error;
-      delete payload.metadata?.error;
+      payload.error = metadata.error as LogPayload["error"];
+      if (payload.metadata) {
+        delete (payload.metadata as Record<string, unknown>).error;
+      }
     }
 
     // In Vercel, console.log(object) is automatically treated as structured log if it's JSON

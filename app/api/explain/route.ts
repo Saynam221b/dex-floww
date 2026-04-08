@@ -107,7 +107,7 @@ async function callGroqWithFallback(nodeMap: Record<string, string>, userAgent: 
       return finalExplanations;
     } catch (err: unknown) {
       lastError = err;
-      const status = (err as any)?.status;
+      const status = (err as { status?: number })?.status;
       const isRateLimit = status === 429;
 
       if (isRateLimit && i < API_KEYS.length - 1) {
@@ -155,7 +155,7 @@ export async function POST(request: Request) {
     return Response.json({ explanations, nodeMap });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Failed to generate explanations.";
-    const status = (err as any)?.status;
+    const status = (err as { status?: number })?.status;
 
     logger.error("Route handler failure", source, err);
 
