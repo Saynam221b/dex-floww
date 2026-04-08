@@ -254,6 +254,7 @@ function transformToGraph(
   explanations: Explanations,
   onExpandToggle: (nodeId: string, expanded: boolean) => void,
   onHeightReport: (nodeId: string, height: number) => void,
+  onCteExpandToggle: (nodeId: string, expanded: boolean) => void,
   nodeHeights?: Map<string, number>,
   isMobileSafari?: boolean
 ): { nodes: Node[]; edges: Edge[] } {
@@ -277,7 +278,7 @@ function transformToGraph(
         nodes.push({
           id: key,
           type: "cteGroup",
-          data: { label },
+          data: { label, isExpanded: val.isExpanded, onCteExpandToggle, nodeId: key },
           position: { x: 0, y: 0 },
           style: { zIndex: -1 },
         });
@@ -560,7 +561,9 @@ function FlowApp() {
         explanations,
         handleExpandToggle,
         handleHeightReport,
-        nodeHeightsRef.current
+        handleCteExpandToggle,
+        nodeHeightsRef.current,
+        isMobileSafari
       );
       setNodes(layoutedNodes);
       setEdges(layoutedEdges);
@@ -576,6 +579,24 @@ function FlowApp() {
         nodeHeightsRef.current.set(nodeId, height);
         triggerRelayout();
       }
+    },
+    [triggerRelayout]
+  );
+
+  /* ---- CTE Expansion toggle callback ---- */
+  const handleCteExpandToggle = useCallback(
+    (nodeId: string, expanded: boolean) => {
+      if (!rawDataRef.current) return;
+      
+      const nodeObj = rawDataRef.current.nodeMap[nodeId];
+      if (nodeObj && typeof nodeObj === 'object') {
+        nodeObj.isExpanded = expanded;
+      }
+      
+      // Manual action — reset the auto-relayout cap
+      relayoutCountRef.current = 0;
+
+      triggerRelayout();
     },
     [triggerRelayout]
   );
@@ -611,7 +632,9 @@ function FlowApp() {
       explanations,
       handleExpandToggle,
       handleHeightReport,
-      nodeHeightsRef.current
+      handleCteExpandToggle,
+      nodeHeightsRef.current,
+      isMobileSafari
     );
     setNodes(layoutedNodes);
     setEdges(layoutedEdges);
@@ -824,6 +847,7 @@ function FlowApp() {
           initialExplanations,
           handleExpandToggle,
           handleHeightReport,
+          handleCteExpandToggle,
           undefined,
           isMobileSafari
         );
@@ -857,6 +881,7 @@ function FlowApp() {
                 explainData.explanations,
                 handleExpandToggle,
                 handleHeightReport,
+                handleCteExpandToggle,
                 nodeHeightsRef.current,
                 isMobileSafari
               );
@@ -875,7 +900,9 @@ function FlowApp() {
                 fallbackExplanations,
                 handleExpandToggle,
                 handleHeightReport,
-                nodeHeightsRef.current
+                handleCteExpandToggle,
+                nodeHeightsRef.current,
+                isMobileSafari
               );
               setNodes(updatedNodes);
               setEdges(updatedEdges);
@@ -894,7 +921,9 @@ function FlowApp() {
               fallbackExplanations,
               handleExpandToggle,
               handleHeightReport,
-              nodeHeightsRef.current
+              handleCteExpandToggle,
+              nodeHeightsRef.current,
+              isMobileSafari
             );
             setNodes(updatedNodes);
             setEdges(updatedEdges);
@@ -1485,6 +1514,15 @@ function FlowApp() {
                     disabled={loading}
                   />
                 </div>
+
+                {isMobileSafari && (
+                  <div className="mb-4 flex w-full items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-200/80">
+                    <Terminal className="h-4 w-4 shrink-0 mt-0.5" />
+                    <span className="text-xs leading-relaxed">
+                      For the best experience analyzing complex graphs, we recommend using a desktop computer.
+                    </span>
+                  </div>
+                )}
 
                 <div className="relative group">
                   <div className="overflow-y-auto max-h-[40vh] rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] focus-within:border-[var(--border-accent)] transition-all duration-300">

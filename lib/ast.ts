@@ -36,7 +36,7 @@ export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, an
         const name: string = cte.name?.value || `cte_${i}`;
         const groupId = `node_cte_${name}`;
 
-        nodes[groupId] = { sql: `CTE: ${name}`, isGroup: true, label: name };
+        nodes[groupId] = { sql: `CTE: ${name}`, isGroup: true, label: name, isExpanded: false };
 
         try {
           const innerStmt = cte.stmt?.ast ?? cte.stmt;

@@ -40,21 +40,74 @@ export function getLayoutedElements(
     marginy: 40,
   });
 
-  // Register every node — use measured height if available, else default.
-  // CTE group (compound) nodes use a small placeholder size; dagre will
-  // expand them automatically to enclose their children.
+  // 1. IDENTIFY COLLAPSED CTE GROUPS
+  const collapsedGroups = new Set<string>();
   for (const node of nodes) {
-    if (node.type === "cteGroup") {
-      // Register compound parent with internal padding so children
-      // don't collide with the group border.
-      g.setNode(node.id, {
-        width: 0,
-        height: 0,
-        paddingLeft: GROUP_PADDING,
-        paddingRight: GROUP_PADDING,
-        paddingTop: GROUP_PADDING + 16, // extra top padding for the CTE label badge
-        paddingBottom: GROUP_PADDING,
+    if (node.type === "cteGroup" && node.data?.isExpanded === false) {
+      collapsedGroups.add(node.id);
+    }
+  }
+
+  // 2. FILTER NODES: Exclude children of collapsed groups
+  const visibleNodes = nodes.filter((node) => {
+    if (node.parentId && collapsedGroups.has(node.parentId)) {
+      return false; // hide child
+    }
+    return true;
+  });
+
+  // 3. REWIRE EDGES: redirect edges pointing to/from hidden children to their CTE parent
+  const visibleEdges: Edge[] = [];
+  const edgeKeySet = new Set<string>();
+
+  for (const edge of edges) {
+    let sourceId = edge.source;
+    let targetId = edge.target;
+
+    const sourceNode = nodes.find(n => n.id === sourceId);
+    if (sourceNode?.parentId && collapsedGroups.has(sourceNode.parentId)) {
+      sourceId = sourceNode.parentId;
+    }
+
+    const targetNode = nodes.find(n => n.id === targetId);
+    if (targetNode?.parentId && collapsedGroups.has(targetNode.parentId)) {
+      targetId = targetNode.parentId;
+    }
+
+    // Skip self-loops
+    if (sourceId === targetId) continue;
+
+    // Deduplicate identical edges after rewiring
+    const key = `${sourceId}->${targetId}`;
+    if (!edgeKeySet.has(key)) {
+      edgeKeySet.add(key);
+      visibleEdges.push({
+        ...edge,
+        id: `rw-${edge.id}`,
+        source: sourceId,
+        target: targetId,
       });
+    }
+  }
+
+  // Register every VISIBLE node
+  for (const node of visibleNodes) {
+    if (node.type === "cteGroup") {
+      const isExpanded = node.data?.isExpanded !== false;
+      if (isExpanded) {
+        // Expanded: use layout padding so Dagre sizes to fit children
+        g.setNode(node.id, {
+          width: 0,
+          height: 0,
+          paddingLeft: GROUP_PADDING,
+          paddingRight: GROUP_PADDING,
+          paddingTop: GROUP_PADDING + 16,
+          paddingBottom: GROUP_PADDING,
+        });
+      } else {
+        // Collapsed: fixed compact size
+        g.setNode(node.id, { width: DEFAULT_NODE_WIDTH, height: 80 });
+      }
     } else {
       const measuredH = nodeHeights?.get(node.id);
       const h = measuredH ?? DEFAULT_NODE_HEIGHT;
@@ -66,14 +119,12 @@ export function getLayoutedElements(
     }
   }
 
-  // Register every edge
-  for (const edge of edges) {
+  // Register every VISIBLE edge
+  for (const edge of visibleEdges) {
     g.setEdge(edge.source, edge.target);
   }
 
-  // Run the layout algorithm — wrapped in try/catch so a dagre crash
-  // never brings down the entire UI. On failure, every node falls back
-  // to position { x: 0, y: 0 }.
+  // Run the layout algorithm
   let layoutFailed = false;
   try {
     dagre.layout(g);
@@ -82,13 +133,12 @@ export function getLayoutedElements(
     layoutFailed = true;
   }
 
-  // Build a lookup for dagre-computed positions of parent (group) nodes
-  // so we can convert children to parent-relative coordinates.
+  // Build a lookup for dagre-computed positions
   const dagreNodeMap = new Map<
     string,
     { x: number; y: number; width: number; height: number }
   >();
-  for (const node of nodes) {
+  for (const node of visibleNodes) {
     if (layoutFailed) {
       dagreNodeMap.set(node.id, { x: 0, y: 0, width: DEFAULT_NODE_WIDTH, height: DEFAULT_NODE_HEIGHT });
     } else {
@@ -102,11 +152,10 @@ export function getLayoutedElements(
   }
 
   // Map dagre positions back onto React Flow nodes
-  const layoutedNodes: Node[] = nodes.map((node) => {
+  const layoutedNodes: Node[] = visibleNodes.map((node) => {
     const dn = dagreNodeMap.get(node.id) ?? { x: 0, y: 0, width: DEFAULT_NODE_WIDTH, height: DEFAULT_NODE_HEIGHT };
 
     // ── CTE Group Node ──
-    // Apply dagre-computed width/height so the bounding box renders correctly.
     if (node.type === "cteGroup") {
       return {
         ...node,
@@ -123,19 +172,15 @@ export function getLayoutedElements(
     }
 
     // ── Child Node (has parentId) ──
-    // React Flow requires child positions RELATIVE to the parent's top-left.
-    // dagre returns center-based absolute coordinates for both parent and child.
     if (node.parentId) {
       const parentDn = dagreNodeMap.get(node.parentId);
       if (parentDn) {
         const measuredH = nodeHeights?.get(node.id);
         const h = measuredH ?? DEFAULT_NODE_HEIGHT;
 
-        // Parent top-left (absolute)
         const parentTopLeftX = parentDn.x - parentDn.width / 2;
         const parentTopLeftY = parentDn.y - parentDn.height / 2;
 
-        // Child top-left (absolute)
         const childTopLeftX = dn.x - DEFAULT_NODE_WIDTH / 2;
         const childTopLeftY = dn.y - h / 2;
 
@@ -162,5 +207,5 @@ export function getLayoutedElements(
     };
   });
 
-  return { nodes: layoutedNodes, edges };
+  return { nodes: layoutedNodes, edges: visibleEdges };
 }
