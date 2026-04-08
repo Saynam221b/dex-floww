@@ -186,7 +186,7 @@ function SqlNodeComponent({ data, id }: NodeProps) {
       ref={nodeRef}
       className="sql-node transition-opacity duration-300"
       style={{
-        zIndex: expanded ? 1000 : 1,
+        zIndex: expanded ? 50 : 1,
         minWidth: 290,
         maxWidth: 360,
         borderRadius: 16,

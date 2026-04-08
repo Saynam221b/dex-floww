@@ -475,6 +475,16 @@ function FlowApp() {
         const decoded = LZString.decompressFromEncodedURIComponent(q) || atob(q);
         setSql(decoded);
         setChaosCleared(true);
+        
+        // Clean up the URL to prevent massive URL strings from causing iOS Safari crash loops
+        try {
+          const newUrl = new URL(window.location.href);
+          newUrl.searchParams.delete("q");
+          window.history.replaceState({}, '', newUrl.toString());
+        } catch (e) {
+          console.warn("Could not clear URL history", e);
+        }
+
         setTimeout(() => handleVisualize(decoded), 100);
       } catch (e) {
         console.error("Failed to decode query from URL", e);
@@ -691,7 +701,7 @@ function FlowApp() {
     const compressed = LZString.compressToEncodedURIComponent(sql);
     const url = new URL(window.location.href);
     url.searchParams.set("q", compressed);
-    window.history.replaceState({}, '', url);
+    // Don't replace state to avoid Safari crash with huge URLs, just copy to clipboard
     navigator.clipboard.writeText(url.toString());
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
@@ -703,11 +713,7 @@ function FlowApp() {
       const query = overrideSql ?? sql;
       if (!query.trim()) return;
 
-      // Update URL with lz-string compressed query
-      const compressed = LZString.compressToEncodedURIComponent(query);
-      const url = new URL(window.location.href);
-      url.searchParams.set("q", compressed);
-      window.history.replaceState({}, '', url);
+      // DO NOT update URL with lz-string compressed query on every visualize to prevent mobile Safari crash loops.
 
       setLoading(true);
       setStage("parsing");
@@ -797,10 +803,40 @@ function FlowApp() {
               setEdges(updatedEdges);
             } else {
               setError(explainData.error || "Failed to generate explanations");
+              setToasterVisible(true);
+              const fallbackExplanations: Explanations = {};
+              for (const k of Object.keys(nodeMap)) {
+                fallbackExplanations[k] = "Explanation unavailable (API Error).";
+              }
+              rawDataRef.current = { nodeMap, explanations: fallbackExplanations };
+              const { nodes: updatedNodes, edges: updatedEdges } = transformToGraph(
+                nodeMap,
+                fallbackExplanations,
+                handleExpandToggle,
+                handleHeightReport,
+                nodeHeightsRef.current
+              );
+              setNodes(updatedNodes);
+              setEdges(updatedEdges);
             }
           })
           .catch((err) => {
             setError(err.message || "Network error fetching explanations");
+            setToasterVisible(true);
+            const fallbackExplanations: Explanations = {};
+            for (const k of Object.keys(nodeMap)) {
+              fallbackExplanations[k] = "Explanation unavailable (Network Error).";
+            }
+            rawDataRef.current = { nodeMap, explanations: fallbackExplanations };
+            const { nodes: updatedNodes, edges: updatedEdges } = transformToGraph(
+              nodeMap,
+              fallbackExplanations,
+              handleExpandToggle,
+              handleHeightReport,
+              nodeHeightsRef.current
+            );
+            setNodes(updatedNodes);
+            setEdges(updatedEdges);
           })
           .finally(() => {
             setLoading(false);
@@ -1456,6 +1492,7 @@ function FlowApp() {
                     id="visualize-btn"
                     onClick={() => handleVisualize()}
                     disabled={loading || !sql.trim()}
+                    aria-label="Visualize"
                     className="flex flex-1 items-center justify-center gap-2.5 rounded-xl px-5 py-3 text-sm font-semibold text-white transition-all duration-300 disabled:cursor-not-allowed disabled:opacity-40"
                     style={{
                       background:
@@ -1484,6 +1521,7 @@ function FlowApp() {
                   <button
                     onClick={clearGraph}
                     disabled={!hasResult && !sql.trim() && !error}
+                    aria-label="Clear"
                     className="flex items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-4 py-3 text-sm text-[var(--text-secondary)] transition-all duration-200 hover:border-[var(--border-accent)] hover:text-[var(--text-primary)] disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <RotateCcw className="h-4 w-4" />
@@ -1525,6 +1563,7 @@ function FlowApp() {
                   {/* Download PNG — prominent primary action */}
                   <button
                     onClick={handleDownloadPNG}
+                    aria-label="Download PNG"
                     className="px-3 py-2.5 rounded-lg border flex items-center gap-2 text-xs font-semibold uppercase tracking-wider transition-all duration-200 backdrop-blur-md"
                     style={{
                       borderColor: "rgba(99,102,241,0.4)",

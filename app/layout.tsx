@@ -13,9 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "D3xTRverse Flow — SQL Pipeline Visualizer",
-  description:
-    "Instantly visualize and decode complex SQL pipelines into interactive DAG flowcharts with AI-powered explanations.",
+  title: "D3xTRverse Flow | SQL Lineage Visualizer",
+  description: "Transform complex SQL into interactive DAGs",
   keywords: [
     "SQL visualizer",
     "DAG",
@@ -34,17 +33,15 @@ export const metadata: Metadata = {
     "apple-mobile-web-app-status-bar-style": "black-translucent",
   },
   openGraph: {
-    title: "D3xTRverse Flow — SQL Pipeline Visualizer",
-    description:
-      "Turn chaotic SQL into clear, interactive DAG flowcharts. Powered by AST parsing & AI explanations.",
+    title: "D3xTRverse Flow | SQL Lineage Visualizer",
+    description: "Transform complex SQL into interactive DAGs",
     siteName: "D3xTRverse Flow",
     type: "website",
   },
   twitter: {
     card: "summary",
-    title: "D3xTRverse Flow",
-    description:
-      "Turn chaotic SQL into clear, interactive DAG flowcharts. Powered by AST parsing & AI explanations.",
+    title: "D3xTRverse Flow | SQL Lineage Visualizer",
+    description: "Transform complex SQL into interactive DAGs",
   },
 };
 
