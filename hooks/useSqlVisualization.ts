@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect, type RefObject, type MouseEvent as ReactMouseEvent } from "react";
-import { useNodesState, useEdgesState, type Node, type Edge } from "@xyflow/react";
+import { useNodesState, useEdgesState, useReactFlow, type Node, type Edge } from "@xyflow/react";
 import LZString from "lz-string";
 import {
   transformToGraph,
@@ -27,6 +27,8 @@ export function useSqlVisualization({
   isMobileSafari,
   reactFlowWrapper,
 }: UseSqlVisualizationParams) {
+  const { fitView } = useReactFlow();
+
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState<VisualizationStage>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -46,12 +48,6 @@ export function useSqlVisualization({
   const explainAbortRef = useRef<AbortController | null>(null);
   const expandedNodeIdsRef = useRef<Set<string>>(new Set());
   const MAX_AUTO_RELAYOUTS = isMobileSafari ? 1 : 3;
-
-  useEffect(() => {
-    return () => {
-      explainAbortRef.current?.abort();
-    };
-  }, []);
 
   const triggerRelayout = useCallback(() => {
     if (relayoutTimerRef.current) clearTimeout(relayoutTimerRef.current);
@@ -76,6 +72,15 @@ export function useSqlVisualization({
     }, 200);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [MAX_AUTO_RELAYOUTS, isMobileSafari, setEdges, setNodes]);
+
+  const handleFormat = useCallback(() => {
+    relayoutCountRef.current = 0;
+    triggerRelayout();
+    setTimeout(() => {
+      fitView({ duration: 800, padding: 0.2 });
+    }, 300);
+  }, [triggerRelayout, fitView]);
+
 
   const handleHeightReport = useCallback(
     (nodeId: string, height: number) => {
@@ -165,7 +170,8 @@ export function useSqlVisualization({
           ...n,
           style: {
             ...n.style,
-            opacity: n.type === "cteGroup" || activeNodes.has(n.id) ? 1 : 0.3,
+            opacity: n.type === "cteGroup" || activeNodes.has(n.id) ? 1 : 0.15,
+            transition: "opacity 0.4s cubic-bezier(0.22, 1, 0.36, 1)",
           },
         }))
       );
@@ -173,16 +179,11 @@ export function useSqlVisualization({
       setEdges((eds) =>
         eds.map((e) => {
           const isActive = activeEdges.has(e.id);
-          const originalColor = (e.data?.originalColor as string) || "#6366f1";
           return {
             ...e,
-            animated: isActive,
-            style: {
-              ...e.style,
-              stroke: isActive ? "#22d3ee" : originalColor,
-              opacity: isActive ? 1 : 0.2,
-              strokeWidth: isActive ? 3 : 2,
-              filter: isActive ? "drop-shadow(0 0 8px rgba(34,211,238,0.8))" : "none",
+            data: {
+              ...e.data,
+              isActive,
             },
           };
         })
@@ -198,25 +199,19 @@ export function useSqlVisualization({
         style: {
           ...n.style,
           opacity: 1,
+          transition: "opacity 0.4s cubic-bezier(0.22, 1, 0.36, 1)",
         },
       }))
     );
 
     setEdges((eds) =>
-      eds.map((e) => {
-        const originalColor = (e.data?.originalColor as string) || "#6366f1";
-        return {
-          ...e,
-          animated: false,
-          style: {
-            ...e.style,
-            stroke: originalColor,
-            opacity: 0.55,
-            strokeWidth: 2,
-            filter: "none",
-          },
-        };
-      })
+      eds.map((e) => ({
+        ...e,
+        data: {
+          ...e.data,
+          isActive: false,
+        },
+      }))
     );
   }, [setEdges, setNodes]);
 
@@ -419,6 +414,7 @@ export function useSqlVisualization({
     handleNodeClick,
     handlePaneClick,
     handleVisualize,
+    handleFormat,
     handleToggleAll,
     resetVisualization,
     loading,

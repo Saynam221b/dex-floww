@@ -186,103 +186,122 @@ function SqlNodeComponent({ data, id }: NodeProps) {
     }
   }, [expanded]);
 
+  const highlightSql = (sql: string) => {
+    const keywords = ["SELECT", "FROM", "WHERE", "JOIN", "ON", "GROUP BY", "ORDER BY", "HAVING", "LIMIT", "WITH", "AS", "DISTINCT", "AND", "OR", "IN", "NOT", "UNION"];
+    let highlighted = sql;
+    keywords.forEach(kw => {
+      const regex = new RegExp(`\\b${kw}\\b`, 'gi');
+      highlighted = highlighted.replace(regex, `<span style="color: ${config.accent}; font-weight: 700;">${kw}</span>`);
+    });
+    return highlighted;
+  };
+
   return (
     <div
       ref={nodeRef}
-      className="sql-node transition-opacity duration-300"
+      className={`sql-node transition-all duration-500 ${expanded ? 'shadow-2xl' : ''}`}
       style={{
         zIndex: expanded ? 50 : 1,
-        minWidth: 290,
-        maxWidth: 360,
-        borderRadius: 16,
-        border: isCte ? `1.5px dashed ${config.accent}88` : `1.5px solid ${config.accent}44`,
-        background: isCte ? "rgba(20, 24, 48, 0.95)" : "rgba(14, 16, 24, 0.92)",
-        backdropFilter: "blur(20px) saturate(1.5)",
-        WebkitBackdropFilter: "blur(20px) saturate(1.5)",
-        boxShadow: isCte 
-          ? `0 0 32px ${config.glow}, 0 0 0 1px ${config.accent}20`
-          : `
-            0 0 28px ${config.glow},
-            0 0 0 1px rgba(255,255,255,0.03),
-            inset 0 1px 0 rgba(255,255,255,0.05)
-          `,
-        padding: "14px 16px 12px",
-        color: "#e8eaf0",
-        fontFamily: "var(--font-sans), system-ui, sans-serif",
+        minWidth: 300,
+        maxWidth: 380,
+        borderRadius: 20,
+        border: `1px solid ${config.accent}40`,
+        background: `linear-gradient(135deg, rgba(14, 16, 24, 0.95), rgba(20, 24, 48, 0.85))`,
+        backdropFilter: "blur(24px) saturate(1.8)",
+        WebkitBackdropFilter: "blur(24px) saturate(1.8)",
+        boxShadow: `
+          0 0 40px ${config.glow},
+          0 0 0 1px rgba(255,255,255,0.05),
+          inset 0 1px 1px rgba(255,255,255,0.1)
+        `,
+        padding: "18px 20px 14px",
+        color: "#f1f3f9",
+        overflow: "hidden",
       }}
     >
-      {/* Target handle — Left */}
+      {/* Animated Background Aura */}
+      <motion.div
+        absolute-inset-0
+        style={{
+          position: "absolute",
+          inset: 0,
+          background: `radial-gradient(circle at 20% 30%, ${config.accent}15 0%, transparent 60%)`,
+          pointerEvents: "none",
+        }}
+        animate={{
+          opacity: [0.4, 0.7, 0.4],
+          scale: [1, 1.1, 1],
+        }}
+        transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
+      />
+
       <Handle
         type="target"
         position={Position.Left}
         style={{
-          width: 10,
-          height: 10,
+          width: 12,
+          height: 12,
           background: `linear-gradient(135deg, ${config.accent}, ${config.gradientTo})`,
-          border: "2px solid rgba(14,16,24,0.95)",
-          left: -5,
-          top: "50%",
-          transform: "translateY(-50%)",
+          border: "3px solid #0a0b10",
+          left: -6,
         }}
       />
 
-      {/* ── Header row: icon + label ── */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          marginBottom: 10,
-        }}
-      >
+      {/* ── Header row ── */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14, position: "relative", zIndex: 1 }}>
         <div
           style={{
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            width: 34,
-            height: 34,
-            borderRadius: 10,
-            background: `linear-gradient(135deg, ${config.accent}20, ${config.accent}08)`,
-            border: `1px solid ${config.accent}35`,
-            flexShrink: 0,
+            width: 38,
+            height: 38,
+            borderRadius: 12,
+            background: `linear-gradient(135deg, ${config.accent}30, ${config.accent}05)`,
+            border: `1px solid ${config.accent}40`,
+            boxShadow: `0 0 15px ${config.accent}20`,
           }}
         >
-          <Icon size={16} color={config.accent} strokeWidth={2} />
+          <Icon size={18} color={config.accent} strokeWidth={2.5} />
         </div>
-        <span
-          style={{
-            fontSize: 11,
-            fontWeight: 700,
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            color: config.accent,
-          }}
-        >
-          {d.label}
-        </span>
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 800,
+              letterSpacing: "0.15em",
+              textTransform: "uppercase",
+              color: config.accent,
+              opacity: 0.8,
+            }}
+          >
+            {d.operationType}
+          </span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>{d.label}</span>
+        </div>
       </div>
 
       {/* ── SQL snippet ── */}
       <div
+        dangerouslySetInnerHTML={{ __html: highlightSql(d.sql) }}
         style={{
           fontFamily: "var(--font-mono), monospace",
-          fontSize: 11.5,
-          lineHeight: 1.5,
-          color: "#c4c8d8",
-          padding: "8px 10px",
-          borderRadius: 8,
-          background: "rgba(255,255,255,0.025)",
-          border: "1px solid rgba(255,255,255,0.05)",
-          marginBottom: 8,
+          fontSize: 11,
+          lineHeight: 1.6,
+          color: "#d1d5db",
+          padding: "10px 12px",
+          borderRadius: 10,
+          background: "rgba(0,0,0,0.3)",
+          border: "1px solid rgba(255,255,255,0.06)",
+          marginBottom: 12,
           wordBreak: "break-word",
           whiteSpace: "pre-wrap",
-          maxHeight: 72,
-          overflow: "hidden",
+          maxHeight: 100,
+          overflow: "auto",
+          position: "relative",
+          zIndex: 1,
         }}
-      >
-        {d.sql}
-      </div>
+      />
 
       {/* ── Reveal AI Insight toggle ── */}
       <button

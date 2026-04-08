@@ -2,6 +2,9 @@ import type { Node, Edge } from "@xyflow/react";
 import { type SqlNodeData } from "@/components/SqlNode";
 import { getLayoutedElements } from "@/utils/layout";
 import { buildAdjacency, buildGraphModel, type GraphNodeKind, type NodeMapInput } from "@/lib/graph-core";
+import GlowEdge from "@/components/GlowEdge";
+import SqlNode from "@/components/SqlNode";
+import CteGroupNode from "@/components/CteGroupNode";
 
 export type NodeMapObj = {
   sql: string;
@@ -28,11 +31,21 @@ const LAYER_LABELS: Record<string, string> = {
 };
 
 const EDGE_COLORS: Record<string, string> = {
-  source: "#3b82f6",
-  join: "#a855f7",
-  filter: "#f59e0b",
-  aggregate: "#10b981",
-  output: "#cbd5e1",
+  source: "#6366f1",
+  join: "#8b5cf6",
+  filter: "#f43f5e",
+  aggregate: "#fbbf24",
+  output: "#34d399",
+  projection: "#3b82f6",
+};
+
+export const NODE_TYPES = {
+  sqlNode: SqlNode,
+  cteGroup: CteGroupNode,
+};
+
+export const EDGE_TYPES = {
+  glow: GlowEdge,
 };
 
 function detectNodeType(key: string): GraphNodeKind {
@@ -171,10 +184,8 @@ export function transformToGraph(
       id: `edge-${graphEdge.source}-${graphEdge.target}`,
       source: graphEdge.source,
       target: graphEdge.target,
-      type: "smoothstep",
+      type: "glow",
       animated,
-      // @ts-expect-error pathOptions is valid for smoothstep.
-      pathOptions: { borderRadius: 24 },
       data: {
         originalColor: color,
         reason: graphEdge.reason,

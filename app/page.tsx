@@ -209,6 +209,7 @@ function FlowApp() {
     handleNodeClick,
     handlePaneClick,
     handleVisualize,
+    handleFormat,
     handleToggleAll,
     resetVisualization,
     loading,
@@ -1348,6 +1349,20 @@ function FlowApp() {
                 onPaneClick={handlePaneClick}
                 reactFlowWrapper={reactFlowWrapper}
               />
+
+              {hasResult && (
+                <div className="absolute top-4 left-4 z-[50]">
+                  <motion.button
+                    onClick={handleFormat}
+                    className="flex items-center gap-2 rounded-lg border border-indigo-400/30 bg-[#0a0b10]/80 px-4 py-2 text-[10px] font-black uppercase tracking-[0.15em] text-indigo-100 backdrop-blur-xl transition-all hover:bg-indigo-500/10 hover:border-indigo-400/60 shadow-[0_0_20px_rgba(0,0,0,0.4)]"
+                    whileHover={{ scale: 1.05, boxShadow: "0 0 25px rgba(99,102,241,0.2)" }}
+                    whileTap={{ scale: 0.95 }}
+                  >
+                    <Zap className="h-3 w-3 text-indigo-400" />
+                    Format Layout
+                  </motion.button>
+                </div>
+              )}
             </div>
           </div>
         </section>

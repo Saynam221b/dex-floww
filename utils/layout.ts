@@ -22,10 +22,27 @@ const GROUP_PADDING = 40;
 /*  When provided, dagre uses the real height instead of guessing.     */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/*  Semantic Ranking                                                   */
+/* ------------------------------------------------------------------ */
+
+const RANK_MAP: Record<string, number> = {
+  from: 0,
+  join: 1,
+  where: 1,
+  having: 1,
+  groupby: 2,
+  select: 3,
+  orderby: 4,
+  limit: 4,
+  union: 4,
+  unknown: 5,
+};
+
 export function getLayoutedElements(
   nodes: Node[],
   edges: Edge[],
-  direction: "TB" | "LR" = "TB",
+  direction: "TB" | "LR" = "LR",
   nodeHeights?: Map<string, number>
 ): { nodes: Node[]; edges: Edge[] } {
   const g = new dagre.graphlib.Graph({ compound: true });
@@ -38,6 +55,7 @@ export function getLayoutedElements(
     ranksep: HORIZONTAL_SPACING,
     marginx: 40,
     marginy: 40,
+    ranker: "network-simplex", // better for lanes
   });
 
   // 1. IDENTIFY COLLAPSED CTE GROUPS
@@ -56,7 +74,7 @@ export function getLayoutedElements(
     return true;
   });
 
-  // 3. REWIRE EDGES: redirect edges pointing to/from hidden children to their CTE parent
+  // 3. REWIRE EDGES
   const visibleEdges: Edge[] = [];
   const edgeKeySet = new Set<string>();
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
@@ -75,10 +93,8 @@ export function getLayoutedElements(
       targetId = targetNode.parentId;
     }
 
-    // Skip self-loops
     if (sourceId === targetId) continue;
 
-    // Deduplicate identical edges after rewiring
     const key = `${sourceId}->${targetId}`;
     if (!edgeKeySet.has(key)) {
       edgeKeySet.add(key);
@@ -91,28 +107,31 @@ export function getLayoutedElements(
     }
   }
 
-  // Register every VISIBLE node
+  // 4. REGISTER VISIBLE NODES WITH RANKS
   for (const node of visibleNodes) {
+    const nodeType = (node.data as any)?.nodeType as string || "unknown";
+    const rank = RANK_MAP[nodeType] ?? 5;
+
     if (node.type === "cteGroup") {
       const isExpanded = node.data?.isExpanded !== false;
       if (isExpanded) {
-        // Expanded: use layout padding so Dagre sizes to fit children
         g.setNode(node.id, {
           width: 0,
           height: 0,
           paddingLeft: GROUP_PADDING,
           paddingRight: GROUP_PADDING,
-          paddingTop: GROUP_PADDING + 16,
+          paddingTop: GROUP_PADDING + 24,
           paddingBottom: GROUP_PADDING,
         });
       } else {
-        // Collapsed: fixed compact size
-        g.setNode(node.id, { width: DEFAULT_NODE_WIDTH, height: 80 });
+        g.setNode(node.id, { width: DEFAULT_NODE_WIDTH, height: 80, rank: 0 }); // CTEs start left
       }
     } else {
       const measuredH = nodeHeights?.get(node.id);
       const h = measuredH ?? DEFAULT_NODE_HEIGHT;
-      g.setNode(node.id, { width: DEFAULT_NODE_WIDTH, height: h });
+      // If it's a child of a CTE, we might want to let dagre handle local ranking
+      // But for global consistency, we apply semantic ranking
+      g.setNode(node.id, { width: DEFAULT_NODE_WIDTH, height: h, rank });
     }
 
     if (node.parentId && g.hasNode(node.parentId)) {
@@ -120,7 +139,7 @@ export function getLayoutedElements(
     }
   }
 
-  // Register every VISIBLE edge
+  // 5. REGISTER VISIBLE EDGES
   for (const edge of visibleEdges) {
     g.setEdge(edge.source, edge.target);
   }
@@ -130,11 +149,11 @@ export function getLayoutedElements(
   try {
     dagre.layout(g);
   } catch (err) {
-    console.error("[D3xTRverse] dagre.layout() failed — using fallback positions", err);
+    console.error("[D3xTRverse] dagre.layout() failed", err);
     layoutFailed = true;
   }
 
-  // Build a lookup for dagre-computed positions
+  // 6. MAP POSITIONS BACK
   const dagreNodeMap = new Map<
     string,
     { x: number; y: number; width: number; height: number }
@@ -152,36 +171,24 @@ export function getLayoutedElements(
     }
   }
 
-  // Map dagre positions back onto React Flow nodes
   const layoutedNodes: Node[] = visibleNodes.map((node) => {
     const dn = dagreNodeMap.get(node.id) ?? { x: 0, y: 0, width: DEFAULT_NODE_WIDTH, height: DEFAULT_NODE_HEIGHT };
 
-    // ── CTE Group Node ──
     if (node.type === "cteGroup") {
       return {
         ...node,
-        position: {
-          x: dn.x - dn.width / 2,
-          y: dn.y - dn.height / 2,
-        },
-        style: {
-          ...node.style,
-          width: dn.width,
-          height: dn.height,
-        },
+        position: { x: dn.x - dn.width / 2, y: dn.y - dn.height / 2 },
+        style: { ...node.style, width: dn.width, height: dn.height },
       };
     }
 
-    // ── Child Node (has parentId) ──
     if (node.parentId) {
       const parentDn = dagreNodeMap.get(node.parentId);
       if (parentDn) {
         const measuredH = nodeHeights?.get(node.id);
         const h = measuredH ?? DEFAULT_NODE_HEIGHT;
-
         const parentTopLeftX = parentDn.x - parentDn.width / 2;
         const parentTopLeftY = parentDn.y - parentDn.height / 2;
-
         const childTopLeftX = dn.x - DEFAULT_NODE_WIDTH / 2;
         const childTopLeftY = dn.y - h / 2;
 
@@ -195,16 +202,12 @@ export function getLayoutedElements(
       }
     }
 
-    // ── Regular Node (no parent) ──
     const measuredH = nodeHeights?.get(node.id);
     const h = measuredH ?? DEFAULT_NODE_HEIGHT;
 
     return {
       ...node,
-      position: {
-        x: dn.x - DEFAULT_NODE_WIDTH / 2,
-        y: dn.y - h / 2,
-      },
+      position: { x: dn.x - DEFAULT_NODE_WIDTH / 2, y: dn.y - h / 2 },
     };
   });
 
