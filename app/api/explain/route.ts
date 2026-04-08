@@ -94,6 +94,8 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const { nodeMap } = body;
+    
+    console.log(`[D3xTRverse Explain] Received request for ${nodeMap ? Object.keys(nodeMap).length : 0} nodes`);
 
     if (!nodeMap || Object.keys(nodeMap).length === 0) {
       return Response.json(
@@ -102,7 +104,10 @@ export async function POST(request: Request) {
       );
     }
 
+    console.time("Groq Completion");
     const explanations = await callGroqWithFallback(nodeMap);
+    console.timeEnd("Groq Completion");
+    console.log(`[D3xTRverse Explain] Successfully generated ${Object.keys(explanations).length} explanations.`);
 
     return Response.json({ explanations, nodeMap });
   } catch (err: unknown) {

@@ -24,6 +24,8 @@ export async function POST(request: Request) {
     };
 
     const dbType = dialectMap[dialect] || "mysql";
+    console.log(`[D3xTRverse Parse] Incoming SQL: ${sql.length} chars, Dialect: ${dbType}`);
+    
     const parser = new Parser();
 
     let ast;
@@ -47,11 +49,13 @@ export async function POST(request: Request) {
 
     let nodeMap;
     try {
+      console.time("AST Flattening");
       nodeMap = flattenAstToNodeMap(ast as unknown as AstNode);
     } catch (mapErr: unknown) {
       // AST parsed OK but our mapper couldn't handle the structure
       // (e.g. deeply nested CTEs, recursive CTEs, dialect-specific nodes)
-      console.error("[D3xTRverse] AST mapping failed", mapErr);
+      console.log(`[D3xTRverse Parse] AST mapping failed for query:`, sql.slice(0, 100) + "...");
+      console.error("[D3xTRverse Parse] AST mapping error details:", mapErr);
       return Response.json(
         {
           error: "Unsupported complex syntax in CTE",
@@ -63,6 +67,8 @@ export async function POST(request: Request) {
       );
     }
 
+    console.timeEnd("AST Flattening");
+    console.log(`[D3xTRverse Parse] Validation complete. Generated ${Object.keys(nodeMap).length} nodes.`);
     return Response.json({ ast, nodeMap });
   } catch (err: unknown) {
     const message =
