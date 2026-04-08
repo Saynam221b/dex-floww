@@ -4,20 +4,15 @@ import { memo, useState, useEffect, useRef, useCallback } from "react";
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Table2,
   GitMerge,
   Filter,
-  Columns3,
-  ArrowDownUp,
-  Group,
-  SlidersHorizontal,
-  Hash,
   Database,
   ChevronDown,
   Sparkles,
   BrainCircuit,
   Lightbulb,
-  Layers,
+  Sigma,
+  TableProperties,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -29,6 +24,7 @@ export interface SqlNodeData {
   sql: string;
   explanation: string;
   nodeType: string;
+  operationType: string;
   onExpandToggle?: (nodeId: string, expanded: boolean) => void;
   onHeightReport?: (nodeId: string, height: number) => void;
   nodeId?: string;
@@ -47,66 +43,42 @@ const THINKING_MESSAGES = [
 ];
 
 /* ------------------------------------------------------------------ */
-/*  Node type → visual config                                          */
+/*  Operation type → visual config                                     */
 /* ------------------------------------------------------------------ */
 
-const TYPE_CONFIG: Record<
+const OPERATION_CONFIG: Record<
   string,
-  { icon: typeof Table2; accent: string; glow: string; gradientTo: string }
+  { icon: React.ElementType; accent: string; glow: string; gradientTo: string }
 > = {
-  from: {
-    icon: Table2,
-    accent: "#22d3ee",
-    glow: "rgba(34,211,238,0.30)",
-    gradientTo: "#06b6d4",
+  source: {
+    icon: Database,
+    accent: "#3b82f6", // Blue
+    glow: "rgba(59,130,246,0.30)",
+    gradientTo: "#2563eb",
   },
   join: {
     icon: GitMerge,
-    accent: "#f472b6",
-    glow: "rgba(244,114,182,0.30)",
-    gradientTo: "#ec4899",
+    accent: "#a855f7", // Purple
+    glow: "rgba(168,85,247,0.30)",
+    gradientTo: "#9333ea",
   },
-  where: {
+  filter: {
     icon: Filter,
-    accent: "#facc15",
-    glow: "rgba(250,204,21,0.30)",
-    gradientTo: "#eab308",
+    accent: "#f59e0b", // Yellow/Orange
+    glow: "rgba(245,158,11,0.30)",
+    gradientTo: "#d97706",
   },
-  select: {
-    icon: Columns3,
-    accent: "#a78bfa",
-    glow: "rgba(167,139,250,0.35)",
-    gradientTo: "#8b5cf6",
+  aggregate: {
+    icon: Sigma,
+    accent: "#10b981", // Green
+    glow: "rgba(16,185,129,0.30)",
+    gradientTo: "#059669",
   },
-  groupby: {
-    icon: Group,
-    accent: "#34d399",
-    glow: "rgba(52,211,153,0.30)",
-    gradientTo: "#10b981",
-  },
-  having: {
-    icon: SlidersHorizontal,
-    accent: "#fb923c",
-    glow: "rgba(251,146,60,0.30)",
-    gradientTo: "#f97316",
-  },
-  orderby: {
-    icon: ArrowDownUp,
-    accent: "#818cf8",
-    glow: "rgba(129,140,248,0.30)",
-    gradientTo: "#6366f1",
-  },
-  limit: {
-    icon: Hash,
-    accent: "#c084fc",
-    glow: "rgba(192,132,252,0.30)",
-    gradientTo: "#a855f7",
-  },
-  union: {
-    icon: Layers,
-    accent: "#f97316",
-    glow: "rgba(249,115,22,0.30)",
-    gradientTo: "#ea580c",
+  output: {
+    icon: TableProperties,
+    accent: "#cbd5e1", // White/Gray
+    glow: "rgba(203,213,225,0.30)",
+    gradientTo: "#94a3b8",
   },
 };
 
@@ -123,7 +95,7 @@ const DEFAULT_CONFIG = {
 
 function SqlNodeComponent({ data, id }: NodeProps) {
   const d = data as unknown as SqlNodeData;
-  const config = TYPE_CONFIG[d.nodeType] ?? DEFAULT_CONFIG;
+  const config = OPERATION_CONFIG[d.operationType] ?? DEFAULT_CONFIG;
   const Icon = config.icon;
   const updateNodeInternals = useUpdateNodeInternals();
 
@@ -212,7 +184,7 @@ function SqlNodeComponent({ data, id }: NodeProps) {
   return (
     <div
       ref={nodeRef}
-      className="sql-node"
+      className="sql-node transition-opacity duration-300"
       style={{
         zIndex: expanded ? 1000 : 1,
         minWidth: 290,
@@ -232,16 +204,18 @@ function SqlNodeComponent({ data, id }: NodeProps) {
         fontFamily: "var(--font-sans), system-ui, sans-serif",
       }}
     >
-      {/* Target handle — top */}
+      {/* Target handle — Left */}
       <Handle
         type="target"
-        position={Position.Top}
+        position={Position.Left}
         style={{
           width: 10,
           height: 10,
           background: `linear-gradient(135deg, ${config.accent}, ${config.gradientTo})`,
           border: "2px solid rgba(14,16,24,0.95)",
-          top: -5,
+          left: -5,
+          top: "50%",
+          transform: "translateY(-50%)",
         }}
       />
 
@@ -661,16 +635,18 @@ function SqlNodeComponent({ data, id }: NodeProps) {
         </div>
       </div>
 
-      {/* Source handle — bottom */}
+      {/* Source handle — Right */}
       <Handle
         type="source"
-        position={Position.Bottom}
+        position={Position.Right}
         style={{
           width: 10,
           height: 10,
           background: `linear-gradient(135deg, ${config.accent}, ${config.gradientTo})`,
           border: "2px solid rgba(14,16,24,0.95)",
-          bottom: -5,
+          right: -5,
+          top: "50%",
+          transform: "translateY(-50%)",
         }}
       />
     </div>

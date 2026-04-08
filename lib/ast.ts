@@ -10,14 +10,40 @@ export interface AstNode {
   orderby?: unknown;
   limit?: unknown;
   distinct?: unknown;
+  with?: Array<any>;
   [key: string]: unknown;
 }
 
-export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, string> {
-  const nodes: Record<string, string> = {};
+export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, any> {
+  const nodes: Record<string, any> = {};
   const target: AstNode = Array.isArray(ast) ? ast[0] : ast;
 
   if (!target) return nodes;
+
+  // Process CTEs (with clauses) first
+  try {
+    if (target.with) {
+      target.with.forEach((cte: any, i: number) => {
+        const name = cte.name?.value || `cte_${i}`;
+        // The cte.stmt from node-sql-parser may be wrapped as
+        // { tableList, columnList, ast: { columns, from, where, ... } }
+        // We need the inner AST node, not the wrapper.
+        const innerStmt = cte.stmt?.ast ?? cte.stmt;
+        const cteStmts = flattenAstToNodeMap(innerStmt);
+        
+        // Add the CTE Group node
+        nodes[`node_cte_${name}`] = { sql: `CTE: ${name}`, isGroup: true, label: name };
+        
+        // Add all sub-nodes and assign them to this group
+        for (const [key, val] of Object.entries(cteStmts)) {
+          const valueObj = typeof val === "string" ? { sql: val } : val;
+          nodes[`${key}_cte_${name}`] = { ...valueObj, parentId: `node_cte_${name}` };
+        }
+      });
+    }
+  } catch {
+    // Ignore CTE parsing errors and proceed
+  }
 
   // SELECT columns
   try {

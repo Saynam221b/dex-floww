@@ -1,12 +1,10 @@
 import { Parser } from "node-sql-parser";
 import { flattenAstToNodeMap, type AstNode } from "@/lib/ast";
 
-const parser = new Parser();
-
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { sql } = body;
+    const { sql, dialect } = body;
 
     if (!sql || typeof sql !== "string") {
       return Response.json(
@@ -15,7 +13,19 @@ export async function POST(request: Request) {
       );
     }
 
-    const ast = parser.astify(sql);
+    // Map dialect names to node-sql-parser database options
+    const dialectMap: Record<string, string> = {
+      "Standard SQL": "mysql", // node-sql-parser default
+      Postgres: "postgresql",
+      PostgreSQL: "postgresql",
+      MySQL: "mysql",
+      BigQuery: "bigquery",
+      SQLite: "sqlite",
+    };
+
+    const dbType = dialectMap[dialect] || "mysql";
+    const parser = new Parser();
+    const ast = parser.astify(sql, { database: dbType });
     const nodeMap = flattenAstToNodeMap(ast as unknown as AstNode);
 
     return Response.json({ ast, nodeMap });
@@ -23,10 +33,16 @@ export async function POST(request: Request) {
     const message =
       err instanceof Error ? err.message : "Failed to parse SQL.";
 
+    // Try to extract line/column info from parser error
+    const lineMatch = message.match(/line\s+(\d+)/i);
+    const colMatch = message.match(/col(?:umn)?\s+(\d+)/i);
+
     return Response.json(
       {
         error: "Invalid SQL syntax.",
         details: message,
+        line: lineMatch ? parseInt(lineMatch[1], 10) : null,
+        column: colMatch ? parseInt(colMatch[1], 10) : null,
       },
       { status: 400 }
     );

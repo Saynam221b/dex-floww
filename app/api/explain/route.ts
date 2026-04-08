@@ -10,8 +10,12 @@ function createClient(apiKey: string) {
   return new Groq({ apiKey });
 }
 
-const SYSTEM_PROMPT =
-  "You are an expert data engineer. I will give you a JSON object mapping node IDs to SQL operations. Return a strict JSON response with the exact same keys, but replace the SQL strings with a 1-sentence, plain-English explanation of what that specific operation is doing. Output ONLY valid JSON, no markdown formatting or backticks.";
+const SYSTEM_PROMPT = `You are a Senior Data Engineer documenting a data pipeline. I will provide a JSON object mapping node IDs to their SQL operations and types. Return a strict JSON response with the exact same node IDs as keys. The value for each key MUST be a 1-sentence explanation of the *business purpose* of that specific operation. 
+Rules:
+- For 'join' types: Explain *why* these specific datasets are being combined (e.g., 'Merging customer profiles with transaction history.').
+- For 'filter' types (WHERE/HAVING): Explain exactly *what* is being excluded and why.
+- For 'aggregate' types (GROUP BY): Explain the metric being calculated.
+- DO NOT just translate the SQL to English. Focus on the analytical intent. Output ONLY valid JSON.`;
 
 /* ------------------------------------------------------------------ */
 /*  Groq call with key rotation                                       */
@@ -22,7 +26,19 @@ async function callGroqWithFallback(nodeMap: Record<string, string>): Promise<Re
     throw new Error("No GROQ_API_KEY_* environment variables configured.");
   }
 
-  const userContent = JSON.stringify(nodeMap);
+  const payload: Record<string, { type: string; sql: string }> = {};
+  for (const [key, sql] of Object.entries(nodeMap)) {
+    const normalized = key.replace(/_u\d+$/, "");
+    let type = "output";
+    if (normalized.startsWith("node_from")) type = "source";
+    else if (normalized.startsWith("node_join")) type = "join";
+    else if (normalized.startsWith("node_where") || normalized.startsWith("node_having")) type = "filter";
+    else if (normalized.startsWith("node_groupby") || normalized.startsWith("node_orderby")) type = "aggregate";
+    
+    payload[key] = { type, sql };
+  }
+
+  const userContent = JSON.stringify(payload);
   let lastError: unknown;
 
   for (let i = 0; i < API_KEYS.length; i++) {

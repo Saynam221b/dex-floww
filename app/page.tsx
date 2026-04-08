@@ -3,6 +3,7 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import SplashScreen from "@/components/SplashScreen";
+import DialectSelector from "@/components/DialectSelector";
 import { runParserDiagnostics } from "@/utils/testParser";
 import {
   ReactFlow,
@@ -41,8 +42,10 @@ import {
   MessageSquare,
   X,
   ExternalLink,
+  Home as HomeIcon,
 } from "lucide-react";
 import SqlNodeComponent, { type SqlNodeData } from "@/components/SqlNode";
+import CteGroupNode from "@/components/CteGroupNode";
 import { getLayoutedElements } from "@/utils/layout";
 
 import Editor from "react-simple-code-editor";
@@ -50,12 +53,14 @@ import Prism from "prismjs";
 import "prismjs/components/prism-sql";
 import "prismjs/themes/prism-tomorrow.css"; // dark theme
 import { toPng, toSvg } from "html-to-image";
+import LZString from "lz-string";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type NodeMap = Record<string, string>;
+type NodeMapObj = { sql: string; parentId?: string; isGroup?: boolean; label?: string; [key: string]: unknown };
+type NodeMap = Record<string, NodeMapObj>;
 type Explanations = Record<string, string>;
 
 /* ------------------------------------------------------------------ */
@@ -87,19 +92,15 @@ const LAYER_LABELS: Record<string, string> = {
 };
 
 /* ------------------------------------------------------------------ */
-/*  Edge colors per node type                                          */
+/*  Edge colors per operation type                                     */
 /* ------------------------------------------------------------------ */
 
 const EDGE_COLORS: Record<string, string> = {
-  from: "#22d3ee",
-  join: "#f472b6",
-  where: "#facc15",
-  select: "#a78bfa",
-  groupby: "#34d399",
-  having: "#fb923c",
-  orderby: "#818cf8",
-  limit: "#c084fc",
-  union: "#f97316",
+  source: "#3b82f6",
+  join: "#a855f7",
+  filter: "#f59e0b",
+  aggregate: "#10b981",
+  output: "#cbd5e1",
 };
 
 /* ------------------------------------------------------------------ */
@@ -121,6 +122,15 @@ function detectNodeType(key: string): string {
   return "unknown";
 }
 
+function getOperationType(layerType: string): string {
+  if (layerType === "from") return "source";
+  if (layerType === "join") return "join";
+  if (layerType === "where" || layerType === "having") return "filter";
+  if (layerType === "groupby" || layerType === "orderby") return "aggregate";
+  return "output";
+}
+
+
 /* ------------------------------------------------------------------ */
 /*  Sample SQL queries for quick-start buttons                         */
 /* ------------------------------------------------------------------ */
@@ -136,16 +146,26 @@ WHERE orders.total > 50
 ORDER BY orders.total DESC;`,
   },
   {
-    label: "Complex CTE",
+    label: "Multi-CTE Analytics",
     icon: Database,
-    sql: `SELECT department, avg_salary, employee_count
-FROM employees
-JOIN departments ON employees.dept_id = departments.id
-WHERE employees.status = 'active'
-GROUP BY department
-HAVING avg_salary > 75000
-ORDER BY employee_count DESC
-LIMIT 10;`,
+    sql: `WITH MonthlySales AS (
+    SELECT DATE_FORMAT(order_date, '%Y-%m') AS month, SUM(total) AS revenue
+    FROM orders
+    WHERE order_date >= '2025-01-01'
+    GROUP BY DATE_FORMAT(order_date, '%Y-%m')
+),
+TopCustomers AS (
+    SELECT customer_id, SUM(total) AS lifetime_value
+    FROM orders
+    GROUP BY customer_id
+    HAVING SUM(total) > 5000
+)
+SELECT ms.month, ms.revenue, COUNT(tc.customer_id) AS vip_customers
+FROM MonthlySales ms
+JOIN TopCustomers tc ON tc.lifetime_value > ms.revenue
+GROUP BY ms.month, ms.revenue
+ORDER BY ms.month DESC
+LIMIT 12;`,
   },
   {
     label: "E-commerce Aggregation",
@@ -160,10 +180,75 @@ HAVING SUM(o.total) > 1000
 ORDER BY revenue DESC
 LIMIT 20;`,
   },
+  {
+    label: "Retention Funnel CTE",
+    icon: Zap,
+    sql: `WITH Signups AS (
+    SELECT user_id, DATE(created_at) AS signup_date
+    FROM users
+    WHERE created_at >= '2025-01-01'
+),
+FirstPurchase AS (
+    SELECT s.user_id, s.signup_date, MIN(o.order_date) AS first_order_date
+    FROM Signups s
+    JOIN orders o ON s.user_id = o.user_id
+    GROUP BY s.user_id, s.signup_date
+),
+RetentionCohort AS (
+    SELECT signup_date, COUNT(DISTINCT fp.user_id) AS converted_users,
+        AVG(DATEDIFF(fp.first_order_date, fp.signup_date)) AS avg_days_to_convert
+    FROM FirstPurchase fp
+    GROUP BY signup_date
+    HAVING COUNT(DISTINCT fp.user_id) > 5
+)
+SELECT rc.signup_date, rc.converted_users, rc.avg_days_to_convert, COUNT(s.user_id) AS total_signups
+FROM RetentionCohort rc
+JOIN Signups s ON rc.signup_date = s.signup_date
+GROUP BY rc.signup_date, rc.converted_users, rc.avg_days_to_convert
+ORDER BY rc.signup_date DESC
+LIMIT 30;`,
+  },
 ];
 
 /* ------------------------------------------------------------------ */
 /*  Transformation: nodeMap + explanations → React Flow graph          */
+function getActivePath(nodeId: string, edges: Edge[]): { activeNodes: Set<string>; activeEdges: Set<string> } {
+  const activeNodes = new Set<string>();
+  const activeEdges = new Set<string>();
+
+  const visitedAncestors = new Set<string>();
+  const visitedDescendants = new Set<string>();
+
+  const traverseUp = (id: string) => {
+    if (visitedAncestors.has(id)) return;
+    visitedAncestors.add(id);
+    activeNodes.add(id);
+    edges.forEach((e) => {
+      if (e.target === id) {
+        activeEdges.add(e.id);
+        traverseUp(e.source);
+      }
+    });
+  };
+
+  const traverseDown = (id: string) => {
+    if (visitedDescendants.has(id)) return;
+    visitedDescendants.add(id);
+    activeNodes.add(id);
+    edges.forEach((e) => {
+      if (e.source === id) {
+        activeEdges.add(e.id);
+        traverseDown(e.target);
+      }
+    });
+  };
+
+  traverseUp(nodeId);
+  traverseDown(nodeId);
+
+  return { activeNodes, activeEdges };
+}
+
 function transformToGraph(
   nodeMap: NodeMap,
   explanations: Explanations,
@@ -173,21 +258,39 @@ function transformToGraph(
 ): { nodes: Node[]; edges: Edge[] } {
   const entries = Object.entries(nodeMap);
 
+  const nodes: Node[] = [];
+  const edges: Edge[] = [];
+
   // Group by layer
-  const layers: Record<string, { key: string; sql: string }[]> = {};
-  for (const [key, sql] of entries) {
+  const layers: Record<string, { key: string; sql: string; parentId?: string }[]> = {};
+  
+  for (const [key, val] of entries) {
+    const isObj = typeof val === "object" && val !== null;
+    const sql = isObj ? val.sql : val;
+    const parentId = isObj ? val.parentId : undefined;
+    const isGroup = isObj ? val.isGroup : undefined;
+    const label = isObj ? val.label : undefined;
+
+    if (isGroup) {
+      nodes.push({
+        id: key,
+        type: "cteGroup",
+        data: { label },
+        position: { x: 0, y: 0 },
+        style: { zIndex: -1 },
+      });
+      continue;
+    }
+
     const type = detectNodeType(key);
     if (!layers[type]) layers[type] = [];
-    layers[type].push({ key, sql });
+    layers[type].push({ key, sql, parentId });
   }
 
   // Sort layers by LAYER_ORDER
   const sortedLayerTypes = Object.keys(layers).sort(
     (a, b) => (LAYER_ORDER[a] ?? 99) - (LAYER_ORDER[b] ?? 99)
   );
-
-  const nodes: Node[] = [];
-  const edges: Edge[] = [];
 
   // Track previous layer's IDs for edges
   let prevLayerIds: string[] = [];
@@ -205,6 +308,7 @@ function transformToGraph(
         sql: item.sql,
         explanation: explanations[item.key] || "Processing…",
         nodeType: layerType,
+        operationType: getOperationType(layerType),
         onExpandToggle,
         onHeightReport,
         nodeId: id,
@@ -213,6 +317,8 @@ function transformToGraph(
       nodes.push({
         id,
         type: "sqlNode",
+        parentId: item.parentId,
+        extent: item.parentId ? "parent" : undefined,
         position: { x: 0, y: 0 },
         data: nodeData as unknown as Record<string, unknown>,
       });
@@ -223,14 +329,18 @@ function transformToGraph(
       for (const sourceId of prevLayerIds) {
         for (const targetId of currentLayerIds) {
           const sourceType = detectNodeType(sourceId);
+          const sourceOpType = getOperationType(sourceType);
           edges.push({
             id: `edge-${sourceId}-${targetId}`,
             source: sourceId,
             target: targetId,
             type: "smoothstep",
             animated: true,
+            data: {
+              originalColor: EDGE_COLORS[sourceOpType] ?? "#6366f1",
+            },
             style: {
-              stroke: EDGE_COLORS[sourceType] ?? "#6366f1",
+              stroke: EDGE_COLORS[sourceOpType] ?? "#6366f1",
               strokeWidth: 2,
               opacity: 0.55,
             },
@@ -243,24 +353,27 @@ function transformToGraph(
   });
 
   // Run dagre layout with measured node heights
-  return getLayoutedElements(nodes, edges, "TB", nodeHeights);
+  return getLayoutedElements(nodes, edges, "LR", nodeHeights);
 }
 
 /* ------------------------------------------------------------------ */
 /*  Page component                                                     */
 /* ------------------------------------------------------------------ */
 
-const nodeTypes = { sqlNode: SqlNodeComponent };
+const nodeTypes = { sqlNode: SqlNodeComponent, cteGroup: CteGroupNode };
 
 function FlowApp() {
   const [sql, setSql] = useState("");
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState<"idle" | "parsing" | "explaining" | "rendering">("idle");
   const [error, setError] = useState<string | null>(null);
+  const [errorDetails, setErrorDetails] = useState<{ line?: number | null; column?: number | null } | null>(null);
   const [hasResult, setHasResult] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [showCreatorModal, setShowCreatorModal] = useState(false);
+  const [dialect, setDialect] = useState("Standard SQL");
+  const [toasterVisible, setToasterVisible] = useState(false);
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { getNodes } = useReactFlow();
 
@@ -274,15 +387,83 @@ function FlowApp() {
   /* ---- Easter Egg ---- */
   const [showEasterEgg, setShowEasterEgg] = useState(false);
 
+  /* ---- Chaos-to-Clarity Hero ---- */
+  const [chaosCleared, setChaosCleared] = useState(false);
+
   const [nodes, setNodes, onNodesChange] = useNodesState([] as Node[]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([] as Edge[]);
+
+  /* ---- Interactive Path Highlighting ---- */
+  const handleNodeClick = useCallback(
+    (_event: React.MouseEvent, node: Node) => {
+      const { activeNodes, activeEdges } = getActivePath(node.id, edges);
+
+      setNodes((nds) =>
+        nds.map((n) => ({
+          ...n,
+          style: {
+            ...n.style,
+            opacity: n.type === "cteGroup" || activeNodes.has(n.id) ? 1 : 0.3,
+          },
+        }))
+      );
+
+      setEdges((eds) =>
+        eds.map((e) => {
+          const isActive = activeEdges.has(e.id);
+          const originalColor = (e.data?.originalColor as string) || "#6366f1";
+          return {
+            ...e,
+            animated: isActive,
+            style: {
+              ...e.style,
+              stroke: isActive ? "#22d3ee" : originalColor,
+              opacity: isActive ? 1 : 0.2,
+              strokeWidth: isActive ? 3 : 2,
+              filter: isActive ? "drop-shadow(0 0 8px rgba(34,211,238,0.8))" : "none",
+            },
+          };
+        })
+      );
+    },
+    [edges, setNodes, setEdges]
+  );
+
+  const handlePaneClick = useCallback(() => {
+    setNodes((nds) =>
+      nds.map((n) => ({
+        ...n,
+        style: {
+          ...n.style,
+          opacity: 1,
+        },
+      }))
+    );
+
+    setEdges((eds) =>
+      eds.map((e) => {
+        const originalColor = (e.data?.originalColor as string) || "#6366f1";
+        return {
+          ...e,
+          animated: true, // we restore the default animated behavior
+          style: {
+            ...e.style,
+            stroke: originalColor,
+            opacity: 0.55,
+            strokeWidth: 2,
+            filter: "none",
+          },
+        };
+      })
+    );
+  }, [setNodes, setEdges]);
 
   // Track measured node heights and stash raw data for re-layout
   const nodeHeightsRef = useRef<Map<string, number>>(new Map());
   const rawDataRef = useRef<{ nodeMap: NodeMap; explanations: Explanations } | null>(null);
   const relayoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /* ---- URL Sync ---- */
+  /* ---- URL Sync — lz-string compression ---- */
   const isInitialized = useRef(false);
   useEffect(() => {
     if (isInitialized.current) return;
@@ -290,7 +471,8 @@ function FlowApp() {
     const q = urlParams.get("q");
     if (q) {
       try {
-        const decoded = atob(q);
+        // Try lz-string first, fallback to legacy base64
+        const decoded = LZString.decompressFromEncodedURIComponent(q) || atob(q);
         setSql(decoded);
         setTimeout(() => handleVisualize(decoded), 100);
       } catch (e) {
@@ -306,12 +488,20 @@ function FlowApp() {
 
   /* ---- Clear graph ---- */
   const clearGraph = useCallback(() => {
+    setSql("");
     setNodes([]);
     setEdges([]);
     setHasResult(false);
     setError(null);
+    setErrorDetails(null);
+    setToasterVisible(false);
     nodeHeightsRef.current = new Map();
     rawDataRef.current = null;
+    
+    // Clear URL if possible
+    const url = new URL(window.location.href);
+    url.searchParams.delete("q");
+    window.history.replaceState({}, '', url);
   }, [setNodes, setEdges]);
 
   /* ---- Debounced relayout using measured heights ---- */
@@ -379,7 +569,7 @@ function FlowApp() {
     setEdges(layoutedEdges);
   }, [setNodes, setEdges, handleExpandToggle, handleHeightReport]);
 
-  /* ---- Full-Canvas Export (Dagre-aware) ---- */
+  /* ---- Full-Canvas Export (High-Quality) ---- */
   const handleDownloadPNG = useCallback(() => {
     if (reactFlowWrapper.current === null) return;
     setExportMenuOpen(false);
@@ -388,31 +578,58 @@ function FlowApp() {
     if (allNodes.length === 0) return;
 
     const nodeBounds = getNodesBounds(allNodes);
-    const padding = 60;
+    const padding = 100;
     const imageWidth = nodeBounds.width + padding * 2;
     const imageHeight = nodeBounds.height + padding * 2;
-    const viewport = getViewportForBounds(nodeBounds, imageWidth, imageHeight, 0.5, 2, padding);
 
-    const flowViewport = reactFlowWrapper.current.querySelector('.react-flow__viewport') as HTMLElement;
+    // Use zoom 1 so nodes render at their true pixel size
+    const viewport = getViewportForBounds(
+      nodeBounds,
+      imageWidth,
+      imageHeight,
+      1,   // minZoom — keep 1:1 scale for clarity
+      1,   // maxZoom — prevent upscaling artifacts
+      padding
+    );
+
+    const flowViewport = reactFlowWrapper.current.querySelector(
+      '.react-flow__viewport'
+    ) as HTMLElement;
     if (!flowViewport) return;
 
-    toPng(flowViewport, {
+    const exportOptions = {
       backgroundColor: '#0f172a',
       width: imageWidth,
       height: imageHeight,
+      pixelRatio: 3, // 3x for retina-quality output
       quality: 1,
-      pixelRatio: 2,
       style: {
         width: `${imageWidth}px`,
         height: `${imageHeight}px`,
         transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
       },
-    }).then((dataUrl) => {
-      const a = document.createElement('a');
-      a.setAttribute('download', 'sql-flow-visualization.png');
-      a.setAttribute('href', dataUrl);
-      a.click();
-    });
+      filter: (node: Element) => {
+        // Exclude minimap, controls, and attribution from export
+        const cls = node.classList;
+        if (!cls) return true;
+        return (
+          !cls.contains('react-flow__minimap') &&
+          !cls.contains('react-flow__controls') &&
+          !cls.contains('react-flow__attribution') &&
+          !cls.contains('react-flow__panel')
+        );
+      },
+    };
+
+    // Double-pass: first call warms up font/image loading, second produces clean output
+    toPng(flowViewport, exportOptions)
+      .then(() => toPng(flowViewport, exportOptions))
+      .then((dataUrl) => {
+        const a = document.createElement('a');
+        a.setAttribute('download', 'dex-flow-visualization.png');
+        a.setAttribute('href', dataUrl);
+        a.click();
+      });
   }, [getNodes]);
 
   const handleDownloadSVG = useCallback(() => {
@@ -423,12 +640,21 @@ function FlowApp() {
     if (allNodes.length === 0) return;
 
     const nodeBounds = getNodesBounds(allNodes);
-    const padding = 60;
+    const padding = 100;
     const imageWidth = nodeBounds.width + padding * 2;
     const imageHeight = nodeBounds.height + padding * 2;
-    const viewport = getViewportForBounds(nodeBounds, imageWidth, imageHeight, 0.5, 2, padding);
+    const viewport = getViewportForBounds(
+      nodeBounds,
+      imageWidth,
+      imageHeight,
+      1,
+      1,
+      padding
+    );
 
-    const flowViewport = reactFlowWrapper.current.querySelector('.react-flow__viewport') as HTMLElement;
+    const flowViewport = reactFlowWrapper.current.querySelector(
+      '.react-flow__viewport'
+    ) as HTMLElement;
     if (!flowViewport) return;
 
     toSvg(flowViewport, {
@@ -440,9 +666,19 @@ function FlowApp() {
         height: `${imageHeight}px`,
         transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
       },
+      filter: (node: Element) => {
+        const cls = node.classList;
+        if (!cls) return true;
+        return (
+          !cls.contains('react-flow__minimap') &&
+          !cls.contains('react-flow__controls') &&
+          !cls.contains('react-flow__attribution') &&
+          !cls.contains('react-flow__panel')
+        );
+      },
     }).then((dataUrl) => {
       const a = document.createElement('a');
-      a.setAttribute('download', 'sql-flow-visualization.svg');
+      a.setAttribute('download', 'dex-flow-visualization.svg');
       a.setAttribute('href', dataUrl);
       a.click();
     });
@@ -451,8 +687,9 @@ function FlowApp() {
   /* ---- Share Link ---- */
   const handleShare = useCallback(() => {
     if (!sql) return;
+    const compressed = LZString.compressToEncodedURIComponent(sql);
     const url = new URL(window.location.href);
-    url.searchParams.set("q", btoa(sql));
+    url.searchParams.set("q", compressed);
     window.history.replaceState({}, '', url);
     navigator.clipboard.writeText(url.toString());
     setCopiedLink(true);
@@ -465,14 +702,17 @@ function FlowApp() {
       const query = overrideSql ?? sql;
       if (!query.trim()) return;
 
-      // Update URL query automatically
+      // Update URL with lz-string compressed query
+      const compressed = LZString.compressToEncodedURIComponent(query);
       const url = new URL(window.location.href);
-      url.searchParams.set("q", btoa(query));
+      url.searchParams.set("q", compressed);
       window.history.replaceState({}, '', url);
 
       setLoading(true);
       setStage("parsing");
       setError(null);
+      setErrorDetails(null);
+      setToasterVisible(false);
 
       // Clear previous graph
       setNodes([]);
@@ -485,13 +725,21 @@ function FlowApp() {
         const parseRes = await fetch("/api/parse", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sql: query.trim() }),
+          body: JSON.stringify({ sql: query.trim(), dialect }),
         });
 
         const parseData = await parseRes.json();
 
         if (!parseRes.ok) {
-          setError(parseData.error || "Failed to parse SQL");
+          const errMsg = parseData.details
+            ? `${parseData.error} — ${parseData.details}`
+            : (parseData.error || "Failed to parse SQL");
+          setError(errMsg);
+          setErrorDetails({ line: parseData.line, column: parseData.column });
+          setToasterVisible(true);
+          if (parseData.line) {
+            console.error(`[D3xTRverse Parser] Syntax error at line ${parseData.line}${parseData.column ? `, column ${parseData.column}` : ""}`);
+          }
           setLoading(false);
           setStage("idle");
           return;
@@ -561,11 +809,12 @@ function FlowApp() {
       } catch (err) {
         const message = err instanceof Error ? err.message : "Network error";
         setError(message);
+        setToasterVisible(true);
         setLoading(false);
         setStage("idle");
       }
     },
-    [sql, setNodes, setEdges, handleExpandToggle, handleHeightReport]
+    [sql, dialect, setNodes, setEdges, handleExpandToggle, handleHeightReport]
   );
 
   /* ---- Sample button handler ---- */
@@ -600,11 +849,35 @@ function FlowApp() {
         animate={{ opacity: showSplash ? 0 : 1 }}
         transition={{ duration: 0.6, ease: "easeOut" }}
       >
-        {/* ── Top Nav Bar ── */}
-        <nav className="flex w-full items-center justify-center sm:justify-end px-4 pt-6 sm:pt-4 md:px-8 md:pt-6">
+        <nav className="flex w-full items-center justify-between px-4 pt-6 sm:pt-4 md:px-8 md:pt-6 relative z-[70]">
+          {/* Left: Go Home (visible when workspace is shown) */}
+          <AnimatePresence>
+            {chaosCleared && (
+              <motion.button
+                key="go-home"
+                onClick={() => setChaosCleared(false)}
+                className="flex items-center gap-2 rounded-full border border-indigo-400/50 px-5 py-2.5 text-[11px] sm:text-xs font-bold uppercase tracking-widest text-indigo-100 cursor-pointer backdrop-blur-xl"
+                style={{
+                  background: "rgba(18,20,30,0.85)",
+                  boxShadow: "0 0 20px rgba(99,102,241,0.25)",
+                }}
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+                transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+                whileHover={{ scale: 1.05, boxShadow: "0 0 30px rgba(99,102,241,0.45)" }}
+                whileTap={{ scale: 0.96 }}
+              >
+                <HomeIcon className="h-4 w-4 text-indigo-300" />
+                <span>Go Home</span>
+              </motion.button>
+            )}
+          </AnimatePresence>
+
+          {/* Right: Meet the Creator */}
           <motion.button
             onClick={() => setShowCreatorModal(true)}
-            className="flex items-center gap-2 rounded-full border border-indigo-400/50 px-5 py-2.5 text-[11px] sm:text-xs font-bold uppercase tracking-widest text-indigo-100 cursor-pointer backdrop-blur-xl"
+            className="flex items-center gap-2 rounded-full border border-indigo-400/50 px-5 py-2.5 text-[11px] sm:text-xs font-bold uppercase tracking-widest text-indigo-100 cursor-pointer backdrop-blur-xl ml-auto"
             style={{
               background: "rgba(18,20,30,0.85)",
               boxShadow: "0 0 20px rgba(99,102,241,0.25)",
@@ -734,28 +1007,341 @@ function FlowApp() {
         </AnimatePresence>
 
         {/* ════════════════════════════════════════════════════════════ */}
-        {/*  HERO SECTION                                               */}
+        {/*  CHAOS-TO-CLARITY HERO                                      */}
         {/* ════════════════════════════════════════════════════════════ */}
-        <section className="relative flex flex-col items-center px-4 pt-14 pb-8 sm:px-6 lg:px-8 md:pt-20 md:pb-12">
-          {/* Subtle radial glow behind hero */}
-          <div
-            className="pointer-events-none absolute inset-0"
-            style={{
-              background:
-                "radial-gradient(ellipse 60% 40% at 50% 0%, rgba(99,102,241,0.08) 0%, transparent 70%)",
-            }}
-          />
+        <AnimatePresence>
+          {!chaosCleared && (
+            <motion.section
+              className="chaos-hero fixed inset-0 z-[60]"
+              key="chaos-hero"
+              exit={{ opacity: 0, scale: 1.05 }}
+              transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
+            >
+              {/* Background layers */}
+              <div className="chaos-noise" />
+              <div className="chaos-grid" />
+              <div className="chaos-scanline" />
 
-          {/* Headline */}
-          <h1 className="relative text-center text-4xl font-extrabold tracking-tight sm:text-5xl lg:text-6xl">
-            <span className="hero-gradient-text">D3xTRverse Flow</span>
-          </h1>
-          <p className="relative mt-4 max-w-xl text-center text-sm leading-relaxed text-[var(--text-secondary)] sm:text-base md:text-lg">
-            Instantly visualize and decode complex SQL pipelines.
-          </p>
+              {/* Red ambient glow */}
+              <div className="pointer-events-none absolute top-1/4 left-1/3 h-[400px] w-[400px] rounded-full bg-red-500/5 blur-[80px]" />
+              <div className="pointer-events-none absolute bottom-1/4 right-1/4 h-[350px] w-[350px] rounded-full bg-indigo-500/4 blur-[70px]" />
+
+              {/* Error Box 1 */}
+              <motion.div
+                className="chaos-error-box"
+                style={{ top: "12%", left: "8%" }}
+                initial={{ opacity: 0 }}
+                animate={chaosCleared
+                  ? { opacity: 0, scale: 0, x: -400, y: -300, rotate: -60 }
+                  : { opacity: 1, y: [0, -8, 0], rotate: [0, -1, 0] }}
+                transition={chaosCleared
+                  ? { duration: 0.6, ease: "easeIn" }
+                  : { y: { duration: 3, repeat: Infinity, ease: "easeInOut" }, rotate: { duration: 4, repeat: Infinity, ease: "easeInOut" }, opacity: { delay: 2.8, duration: 0.5 } }}
+              >
+                Syntax Error: Unexpected token
+              </motion.div>
+
+              {/* Error Box 2 */}
+              <motion.div
+                className="chaos-error-box"
+                style={{ top: "68%", right: "6%" }}
+                initial={{ opacity: 0 }}
+                animate={chaosCleared
+                  ? { opacity: 0, scale: 0, x: 400, y: 300, rotate: 45 }
+                  : { opacity: 1, y: [0, 10, 0], rotate: [0, 2, 0] }}
+                transition={chaosCleared
+                  ? { duration: 0.5, ease: "easeIn", delay: 0.1 }
+                  : { y: { duration: 3.5, repeat: Infinity, ease: "easeInOut" }, rotate: { duration: 5, repeat: Infinity, ease: "easeInOut" }, opacity: { delay: 3.1, duration: 0.5 } }}
+              >
+                ERROR 1064: near &quot;SELEC&quot;
+              </motion.div>
+
+              {/* Error Box 3 */}
+              <motion.div
+                className="chaos-error-box"
+                style={{ bottom: "18%", left: "15%" }}
+                initial={{ opacity: 0 }}
+                animate={chaosCleared
+                  ? { opacity: 0, scale: 0, x: -300, y: 400, rotate: -30 }
+                  : { opacity: 1, y: [0, -6, 0], rotate: [0, 1.5, 0] }}
+                transition={chaosCleared
+                  ? { duration: 0.6, ease: "easeIn", delay: 0.15 }
+                  : { y: { duration: 4, repeat: Infinity, ease: "easeInOut" }, rotate: { duration: 3.5, repeat: Infinity, ease: "easeInOut" }, opacity: { delay: 3.3, duration: 0.5 } }}
+              >
+                Missing FROM clause
+              </motion.div>
+
+              {/* Error Box 4 */}
+              <motion.div
+                className="chaos-error-box"
+                style={{ top: "38%", right: "12%" }}
+                initial={{ opacity: 0 }}
+                animate={chaosCleared
+                  ? { opacity: 0, scale: 0, x: 500, y: -200, rotate: 70 }
+                  : { opacity: 1, y: [0, 7, 0], rotate: [0, -1, 0] }}
+                transition={chaosCleared
+                  ? { duration: 0.5, ease: "easeIn", delay: 0.05 }
+                  : { y: { duration: 2.8, repeat: Infinity, ease: "easeInOut" }, rotate: { duration: 3, repeat: Infinity, ease: "easeInOut" }, opacity: { delay: 3.5, duration: 0.5 } }}
+              >
+                Column &apos;user_id&apos; is ambiguous
+              </motion.div>
+
+              {/* SQL Scrap 1 */}
+              <motion.div
+                className="chaos-sql-scrap"
+                style={{ top: "22%", right: "18%", transform: "rotate(3deg)" }}
+                initial={{ opacity: 0 }}
+                animate={chaosCleared
+                  ? { opacity: 0, scale: 0, x: 300, y: -400, rotate: 40 }
+                  : { opacity: 1, y: [0, -12, 0], rotate: [3, 5, 3] }}
+                transition={chaosCleared
+                  ? { duration: 0.5, ease: "easeIn", delay: 0.08 }
+                  : { y: { duration: 4.5, repeat: Infinity, ease: "easeInOut" }, rotate: { duration: 6, repeat: Infinity, ease: "easeInOut" }, opacity: { delay: 2.9, duration: 0.5 } }}
+              >
+                {`SELECT * FROM (\n  SELECT * FROM (\n    SELECT *\n    FROM ???\n  )\n)`}
+              </motion.div>
+
+              {/* SQL Scrap 2 */}
+              <motion.div
+                className="chaos-sql-scrap"
+                style={{ bottom: "25%", right: "22%", transform: "rotate(-2deg)" }}
+                initial={{ opacity: 0 }}
+                animate={chaosCleared
+                  ? { opacity: 0, scale: 0, x: 200, y: 500, rotate: -50 }
+                  : { opacity: 1, y: [0, 8, 0], rotate: [-2, -4, -2] }}
+                transition={chaosCleared
+                  ? { duration: 0.55, ease: "easeIn", delay: 0.12 }
+                  : { y: { duration: 3.2, repeat: Infinity, ease: "easeInOut" }, rotate: { duration: 5, repeat: Infinity, ease: "easeInOut" }, opacity: { delay: 3.2, duration: 0.5 } }}
+              >
+                {`JOIN t1 ON t1.id =\n  t2.id = t3.id --??\nWHERE 1 = 1\n  AND ??? > 0`}
+              </motion.div>
+
+              {/* SQL Scrap 3 */}
+              <motion.div
+                className="chaos-sql-scrap"
+                style={{ top: "55%", left: "5%", transform: "rotate(-4deg)" }}
+                initial={{ opacity: 0 }}
+                animate={chaosCleared
+                  ? { opacity: 0, scale: 0, x: -500, y: 200, rotate: -80 }
+                  : { opacity: 1, y: [0, -10, 0], rotate: [-4, -2, -4] }}
+                transition={chaosCleared
+                  ? { duration: 0.6, ease: "easeIn", delay: 0.2 }
+                  : { y: { duration: 3.8, repeat: Infinity, ease: "easeInOut" }, rotate: { duration: 4.5, repeat: Infinity, ease: "easeInOut" }, opacity: { delay: 3.4, duration: 0.5 } }}
+              >
+                {`UNION ALL\n  SELECT col1,, col2\n  FROM tbl\n  GROUP BY ???`}
+              </motion.div>
+
+              {/* SQL Scrap 4 */}
+              <motion.div
+                className="chaos-sql-scrap"
+                style={{ top: "8%", left: "40%", transform: "rotate(5deg)" }}
+                initial={{ opacity: 0 }}
+                animate={chaosCleared
+                  ? { opacity: 0, scale: 0, y: -500, rotate: 90 }
+                  : { opacity: 1, y: [0, 6, 0], rotate: [5, 3, 5] }}
+                transition={chaosCleared
+                  ? { duration: 0.45, ease: "easeIn", delay: 0.1 }
+                  : { y: { duration: 3, repeat: Infinity, ease: "easeInOut" }, rotate: { duration: 4, repeat: Infinity, ease: "easeInOut" }, opacity: { delay: 3, duration: 0.5 } }}
+              >
+                {`WITH cte AS (\n  SELECT ???\n  FROM deleted_tbl\n) -- TODO: fix`}
+              </motion.div>
+
+              {/* Broken SVG Line 1 */}
+              <motion.div
+                className="chaos-broken-line"
+                style={{ top: "30%", left: "25%" }}
+                initial={{ opacity: 0 }}
+                animate={chaosCleared
+                  ? { opacity: 0, scale: 0, x: -300, rotate: -90 }
+                  : { opacity: 0.3, y: [0, -5, 0] }}
+                transition={chaosCleared
+                  ? { duration: 0.4, ease: "easeIn" }
+                  : { y: { duration: 3, repeat: Infinity, ease: "easeInOut" }, opacity: { delay: 3.1, duration: 0.5 } }}
+              >
+                <svg width="140" height="80" viewBox="0 0 140 80" fill="none">
+                  <path d="M0 40 Q30 10, 60 45 T90 20 L140 60" stroke="rgba(239,68,68,0.35)" strokeWidth="1.5" strokeDasharray="4 6" fill="none" />
+                  <path d="M20 70 Q50 30, 80 55 T120 15" stroke="rgba(99,102,241,0.2)" strokeWidth="1" strokeDasharray="3 5" fill="none" />
+                </svg>
+              </motion.div>
+
+              {/* Broken SVG Line 2 */}
+              <motion.div
+                className="chaos-broken-line"
+                style={{ bottom: "35%", right: "30%" }}
+                initial={{ opacity: 0 }}
+                animate={chaosCleared
+                  ? { opacity: 0, scale: 0, x: 200, rotate: 60 }
+                  : { opacity: 0.25, y: [0, 8, 0], rotate: [0, 2, 0] }}
+                transition={chaosCleared
+                  ? { duration: 0.5, ease: "easeIn", delay: 0.1 }
+                  : { y: { duration: 4, repeat: Infinity, ease: "easeInOut" }, rotate: { duration: 5, repeat: Infinity, ease: "easeInOut" }, opacity: { delay: 3.3, duration: 0.5 } }}
+              >
+                <svg width="160" height="90" viewBox="0 0 160 90" fill="none">
+                  <path d="M0 50 C40 10, 60 80, 100 30 L130 70 L160 20" stroke="rgba(239,68,68,0.25)" strokeWidth="1.5" strokeDasharray="5 7" fill="none" />
+                  <circle cx="100" cy="30" r="3" fill="rgba(239,68,68,0.4)" />
+                  <circle cx="50" cy="55" r="2" fill="rgba(99,102,241,0.3)" />
+                </svg>
+              </motion.div>
+
+              {/* Broken SVG Line 3 */}
+              <motion.div
+                className="chaos-broken-line"
+                style={{ top: "75%", left: "35%" }}
+                initial={{ opacity: 0 }}
+                animate={chaosCleared
+                  ? { opacity: 0, scale: 0, y: 400, rotate: -45 }
+                  : { opacity: 0.2, y: [0, -7, 0] }}
+                transition={chaosCleared
+                  ? { duration: 0.55, ease: "easeIn", delay: 0.15 }
+                  : { y: { duration: 3.5, repeat: Infinity, ease: "easeInOut" }, opacity: { delay: 3.5, duration: 0.5 } }}
+              >
+                <svg width="120" height="60" viewBox="0 0 120 60" fill="none">
+                  <path d="M0 30 L30 10 L50 50 L80 5 L120 40" stroke="rgba(245,158,11,0.2)" strokeWidth="1" strokeDasharray="3 4" fill="none" />
+                  <path d="M10 55 Q40 20, 70 45 T110 10" stroke="rgba(239,68,68,0.2)" strokeWidth="1" strokeDasharray="4 5" fill="none" />
+                </svg>
+              </motion.div>
+
+              {/* Broken SVG Line 4 */}
+              <motion.div
+                className="chaos-broken-line"
+                style={{ top: "45%", right: "5%" }}
+                initial={{ opacity: 0 }}
+                animate={chaosCleared
+                  ? { opacity: 0, scale: 0, x: 500, rotate: 30 }
+                  : { opacity: 0.2, y: [0, 5, 0], rotate: [0, -1, 0] }}
+                transition={chaosCleared
+                  ? { duration: 0.5, ease: "easeIn", delay: 0.18 }
+                  : { y: { duration: 4.2, repeat: Infinity, ease: "easeInOut" }, rotate: { duration: 3.5, repeat: Infinity, ease: "easeInOut" }, opacity: { delay: 3.6, duration: 0.5 } }}
+              >
+                <svg width="100" height="100" viewBox="0 0 100 100" fill="none">
+                  <path d="M10 90 Q30 50, 50 70 T90 10" stroke="rgba(99,102,241,0.25)" strokeWidth="1.5" strokeDasharray="4 6" fill="none" />
+                  <path d="M5 20 L45 80 L95 30" stroke="rgba(239,68,68,0.2)" strokeWidth="1" strokeDasharray="3 5" fill="none" />
+                </svg>
+              </motion.div>
+
+              {/* ── Hero Center Content ── */}
+              <div className="relative z-10 flex flex-col items-center px-4">
+                {/* Glitch branding */}
+                <motion.div
+                  className="mb-6 flex items-center gap-3"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: showSplash ? 0 : 1, y: showSplash ? 20 : 0 }}
+                  transition={{ delay: 2.6, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+                >
+                  <div
+                    className="flex h-12 w-12 items-center justify-center rounded-xl"
+                    style={{
+                      background: "linear-gradient(135deg, #ef4444, #6366f1)",
+                      boxShadow: "0 0 30px rgba(239,68,68,0.3), 0 4px 16px rgba(0,0,0,0.5)",
+                    }}
+                  >
+                    <Braces className="h-7 w-7 text-white" strokeWidth={2.5} />
+                  </div>
+                  <span className="glitch-text text-sm font-bold tracking-[0.2em] text-[var(--text-muted)] uppercase" data-text="D3xTRverse">
+                    D3xTRverse
+                  </span>
+                </motion.div>
+
+                {/* Headline */}
+                <motion.h1
+                  className="chaos-headline"
+                  initial={{ opacity: 0, y: 30 }}
+                  animate={{ opacity: showSplash ? 0 : 1, y: showSplash ? 30 : 0 }}
+                  transition={{ delay: 2.8, duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+                >
+                  SQL is a Mess.{" "}
+                  <br className="hidden sm:block" />
+                  <em>We Bring the Flow.</em>
+                </motion.h1>
+
+                {/* Subtext */}
+                <motion.p
+                  className="chaos-subtext"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: showSplash ? 0 : 1, y: showSplash ? 20 : 0 }}
+                  transition={{ delay: 3.0, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+                >
+                  Tangled subqueries. Cryptic errors. Lineage nightmares. One click to clarity.
+                </motion.p>
+
+                {/* CTA */}
+                <motion.button
+                  className="fix-chaos-btn mt-10"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: showSplash ? 0 : 1, y: showSplash ? 20 : 0 }}
+                  transition={{ delay: 3.3, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+                  onClick={() => setChaosCleared(true)}
+                >
+                  <Zap className="h-5 w-5" />
+                  Fix the Chaos
+                </motion.button>
+              </div>
+            </motion.section>
+          )}
+        </AnimatePresence>
+
+
+        {/* ════════════════════════════════════════════════════════════ */}
+        {/*  WORKSPACE — Editor + Canvas (always rendered, under overlay) */}
+        {/* ════════════════════════════════════════════════════════════ */}
+        <section
+          id="workspace"
+          className="workspace-section flex flex-1 flex-col items-center px-4 pt-12 pb-6 sm:px-6 lg:px-8"
+        >
+          {/* ── Ambient background elements ── */}
+          <div className="ws-glow ws-glow--indigo" />
+          <div className="ws-glow ws-glow--violet" />
+          <div className="ws-glow ws-glow--cyan" />
+
+          {/* Flowing data streams */}
+          <div className="ws-data-stream" style={{ top: "15%" }} />
+          <div className="ws-data-stream" style={{ top: "45%" }} />
+          <div className="ws-data-stream" style={{ top: "75%" }} />
+
+          {/* Corner accent markers */}
+          <div className="ws-corner-accent ws-corner-accent--tl" />
+          <div className="ws-corner-accent ws-corner-accent--tr" />
+          <div className="ws-corner-accent ws-corner-accent--bl" />
+          <div className="ws-corner-accent ws-corner-accent--br" />
+
+          {/* Floating micro-particles */}
+          <div className="ws-particles">
+            <div className="ws-particle" style={{ left: "5%" }} />
+            <div className="ws-particle" />
+            <div className="ws-particle" />
+            <div className="ws-particle" />
+            <div className="ws-particle" />
+            <div className="ws-particle" />
+            <div className="ws-particle" />
+            <div className="ws-particle" />
+          </div>
+
+          {/* Workspace title bar */}
+          <motion.div
+            className="mb-6 flex items-center gap-3"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <div
+              className="flex h-10 w-10 items-center justify-center rounded-xl"
+              style={{
+                background: "linear-gradient(135deg, var(--accent-indigo), var(--accent-violet))",
+                boxShadow: "0 0 24px rgba(99,102,241,0.3)",
+              }}
+            >
+              <Braces className="h-5 w-5 text-white" strokeWidth={2.5} />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold tracking-tight text-white">
+                D3xTR<span className="hero-gradient-text">verse</span> Flow
+              </h2>
+              <p className="text-[11px] text-[var(--text-muted)] tracking-wide">Paste SQL · Visualize · Trace Lineage</p>
+            </div>
+          </motion.div>
 
           {/* Sample query buttons */}
-          <div className="relative mt-8 flex flex-wrap items-center justify-center gap-3">
+          <div className="mb-8 flex flex-wrap items-center justify-center gap-3 max-w-4xl">
             {SAMPLE_QUERIES.map((sample) => {
               const SIcon = sample.icon;
               return (
@@ -776,12 +1362,6 @@ function FlowApp() {
               );
             })}
           </div>
-        </section>
-
-        {/* ════════════════════════════════════════════════════════════ */}
-        {/*  MAIN CONTENT — Editor + Canvas                             */}
-        {/* ════════════════════════════════════════════════════════════ */}
-        <section className="flex flex-1 flex-col items-center px-4 pb-6 sm:px-6 lg:px-8">
           {/* Responsive wrapper: stack on mobile, side-by-side on desktop */}
           <div className="flex w-full max-w-7xl flex-col gap-6 md:flex-row md:gap-8 flex-1">
             {/* ── Left: SQL Editor Panel ── */}
@@ -794,11 +1374,18 @@ function FlowApp() {
                 }}
               >
                 {/* Editor header */}
-                <div className="mb-4 flex items-center gap-2">
-                  <Braces className="h-4 w-4 text-[var(--accent-indigo)]" />
-                  <span className="text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">
-                    SQL Input
-                  </span>
+                <div className="mb-4 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Braces className="h-4 w-4 text-[var(--accent-indigo)]" />
+                    <span className="text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">
+                      SQL Input
+                    </span>
+                  </div>
+                  <DialectSelector
+                    value={dialect}
+                    onChange={setDialect}
+                    disabled={loading}
+                  />
                 </div>
 
                 <div className="relative group">
@@ -827,13 +1414,40 @@ function FlowApp() {
                   </span>
                 </div>
 
-                {/* Error banner */}
-                {error && (
-                  <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-400 animate-fade-in-up">
-                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                    <span>{error}</span>
-                  </div>
-                )}
+                {/* Error Toaster — inline status bar */}
+                <AnimatePresence>
+                  {toasterVisible && error && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8, height: 0 }}
+                      animate={{ opacity: 1, y: 0, height: "auto" }}
+                      exit={{ opacity: 0, y: -4, height: 0 }}
+                      transition={{ duration: 0.25 }}
+                      className="error-toaster mt-3 overflow-hidden rounded-xl border border-red-500/30 bg-gradient-to-r from-red-500/8 via-red-500/5 to-transparent"
+                    >
+                      <div className="flex items-start gap-2.5 px-4 py-3">
+                        <div className="mt-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-red-500/15 shrink-0">
+                          <AlertTriangle className="h-3 w-3 text-red-400" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-red-300 break-words leading-relaxed">{error}</p>
+                          {errorDetails?.line && (
+                            <p className="mt-1 flex items-center gap-1.5 text-xs text-red-400/70 font-mono">
+                              <span className="inline-block h-1.5 w-1.5 rounded-full bg-red-400/60 animate-pulse" />
+                              Line {errorDetails.line}
+                              {errorDetails.column ? `, Col ${errorDetails.column}` : ""}
+                            </p>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => { setToasterVisible(false); setError(null); setErrorDetails(null); }}
+                          className="mt-0.5 shrink-0 rounded-md p-1 text-red-400/60 transition-colors hover:bg-red-500/10 hover:text-red-300"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
 
                 {/* Action buttons */}
                 <div className="mt-4 flex gap-3">
@@ -866,15 +1480,14 @@ function FlowApp() {
                     )}
                   </button>
 
-                  {hasResult && (
-                    <button
-                      onClick={clearGraph}
-                      className="flex items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-4 py-3 text-sm text-[var(--text-secondary)] transition-all duration-200 hover:border-[var(--border-accent)] hover:text-[var(--text-primary)]"
-                    >
-                      <RotateCcw className="h-4 w-4" />
-                      Clear
-                    </button>
-                  )}
+                  <button
+                    onClick={clearGraph}
+                    disabled={!hasResult && !sql.trim() && !error}
+                    className="flex items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-4 py-3 text-sm text-[var(--text-secondary)] transition-all duration-200 hover:border-[var(--border-accent)] hover:text-[var(--text-primary)] disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    Clear
+                  </button>
                 </div>
               </div>
             </div>
@@ -908,13 +1521,36 @@ function FlowApp() {
                     <Share2 size={16} />
                     {copiedLink && <span className="text-[10px] font-bold tracking-wider absolute -bottom-6 left-1/2 -translate-x-1/2 text-emerald-400">COPIED</span>}
                   </button>
+                  {/* Download PNG — prominent primary action */}
+                  <button
+                    onClick={handleDownloadPNG}
+                    className="px-3 py-2.5 rounded-lg border flex items-center gap-2 text-xs font-semibold uppercase tracking-wider transition-all duration-200 backdrop-blur-md"
+                    style={{
+                      borderColor: "rgba(99,102,241,0.4)",
+                      background: "rgba(99,102,241,0.12)",
+                      color: "#a5b4fc",
+                      boxShadow: "0 0 16px rgba(99,102,241,0.15)",
+                    }}
+                    title="Download PNG"
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = "rgba(99,102,241,0.22)";
+                      e.currentTarget.style.boxShadow = "0 0 24px rgba(99,102,241,0.3)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = "rgba(99,102,241,0.12)";
+                      e.currentTarget.style.boxShadow = "0 0 16px rgba(99,102,241,0.15)";
+                    }}
+                  >
+                    <Download size={14} />
+                    <span className="hidden sm:inline">PNG</span>
+                  </button>
+
                   <div className="relative">
                     <button
                       onClick={() => setExportMenuOpen(!exportMenuOpen)}
                       className="p-2.5 rounded-lg bg-[rgba(18,20,30,0.8)] border border-[rgba(255,255,255,0.1)] text-gray-300 hover:text-white hover:bg-[rgba(255,255,255,0.1)] transition-colors backdrop-blur-md flex items-center gap-1.5"
-                      title="Export Options"
+                      title="More Export Options"
                     >
-                      <Download size={16} />
                       <ChevronDown size={14} className="opacity-70" />
                     </button>
 
@@ -952,6 +1588,8 @@ function FlowApp() {
                     edges={edges}
                     onNodesChange={onNodesChange}
                     onEdgesChange={onEdgesChange}
+                    onNodeClick={handleNodeClick}
+                    onPaneClick={handlePaneClick}
                     nodeTypes={nodeTypes}
                     proOptions={proOptions}
                     connectionLineType={ConnectionLineType.SmoothStep}
@@ -1017,6 +1655,15 @@ function FlowApp() {
             <span className="mx-1 opacity-30">|</span>{" "}
             <span className="hero-gradient-text text-[11px] font-bold">D3xTRverse</span>
           </p>
+          <a
+            href="https://github.com/Saynam221b/dex-floww"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-[var(--text-muted)] transition-all duration-300 hover:text-[var(--accent-indigo)] hover:drop-shadow-[0_0_8px_rgba(99,102,241,0.5)]"
+          >
+            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+            View on GitHub
+          </a>
           <button
             onClick={runParserDiagnostics}
             className="text-[10px] text-[var(--text-muted)] opacity-20 hover:opacity-100 transition-opacity bg-transparent border-none cursor-pointer"
