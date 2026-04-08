@@ -7,8 +7,8 @@ import type { Node, Edge } from "@xyflow/react";
 
 const DEFAULT_NODE_WIDTH = 320;
 const DEFAULT_NODE_HEIGHT = 180; // compact collapsed height
-const HORIZONTAL_SPACING = 150; // distance between ranks (LR)
-const VERTICAL_SPACING = 60;
+const HORIZONTAL_SPACING = 100; // distance between ranks (LR)
+const VERTICAL_SPACING = 50;
 
 /* Padding inside CTE group bounding boxes so children don't touch the border */
 const GROUP_PADDING = 40;

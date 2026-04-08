@@ -344,7 +344,9 @@ function transformToGraph(
             source: sourceId,
             target: targetId,
             type: "smoothstep",
-            animated: true,
+            animated: false,
+            // @ts-ignore - pathOptions is valid for smoothstep but not typed in generic Edge
+            pathOptions: { borderRadius: 24 },
             data: {
               originalColor: EDGE_COLORS[sourceOpType] ?? "#6366f1",
             },
@@ -466,7 +468,7 @@ function FlowApp() {
         const originalColor = (e.data?.originalColor as string) || "#6366f1";
         return {
           ...e,
-          animated: true, // we restore the default animated behavior
+          animated: false, // restore to static background
           style: {
             ...e.style,
             stroke: originalColor,
