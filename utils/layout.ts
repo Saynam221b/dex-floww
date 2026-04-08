@@ -61,7 +61,7 @@ export function getLayoutedElements(
       g.setNode(node.id, { width: DEFAULT_NODE_WIDTH, height: h });
     }
 
-    if (node.parentId) {
+    if (node.parentId && g.hasNode(node.parentId)) {
       g.setParent(node.id, node.parentId);
     }
   }
@@ -71,8 +71,16 @@ export function getLayoutedElements(
     g.setEdge(edge.source, edge.target);
   }
 
-  // Run the layout algorithm
-  dagre.layout(g);
+  // Run the layout algorithm — wrapped in try/catch so a dagre crash
+  // never brings down the entire UI. On failure, every node falls back
+  // to position { x: 0, y: 0 }.
+  let layoutFailed = false;
+  try {
+    dagre.layout(g);
+  } catch (err) {
+    console.error("[D3xTRverse] dagre.layout() failed — using fallback positions", err);
+    layoutFailed = true;
+  }
 
   // Build a lookup for dagre-computed positions of parent (group) nodes
   // so we can convert children to parent-relative coordinates.
@@ -81,18 +89,21 @@ export function getLayoutedElements(
     { x: number; y: number; width: number; height: number }
   >();
   for (const node of nodes) {
-    const dn = g.node(node.id);
-    dagreNodeMap.set(node.id, {
-      x: dn.x,
-      y: dn.y,
-      width: dn.width,
-      height: dn.height,
-    });
+    if (layoutFailed) {
+      dagreNodeMap.set(node.id, { x: 0, y: 0, width: DEFAULT_NODE_WIDTH, height: DEFAULT_NODE_HEIGHT });
+    } else {
+      const dn = g.node(node.id);
+      if (dn) {
+        dagreNodeMap.set(node.id, { x: dn.x, y: dn.y, width: dn.width, height: dn.height });
+      } else {
+        dagreNodeMap.set(node.id, { x: 0, y: 0, width: DEFAULT_NODE_WIDTH, height: DEFAULT_NODE_HEIGHT });
+      }
+    }
   }
 
   // Map dagre positions back onto React Flow nodes
   const layoutedNodes: Node[] = nodes.map((node) => {
-    const dn = dagreNodeMap.get(node.id)!;
+    const dn = dagreNodeMap.get(node.id) ?? { x: 0, y: 0, width: DEFAULT_NODE_WIDTH, height: DEFAULT_NODE_HEIGHT };
 
     // ── CTE Group Node ──
     // Apply dagre-computed width/height so the bounding box renders correctly.

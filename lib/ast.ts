@@ -23,23 +23,38 @@ export function flattenAstToNodeMap(ast: AstNode | AstNode[]): Record<string, an
   // Process CTEs (with clauses) first
   try {
     if (target.with) {
-      target.with.forEach((cte: any, i: number) => {
-        const name = cte.name?.value || `cte_${i}`;
-        // The cte.stmt from node-sql-parser may be wrapped as
-        // { tableList, columnList, ast: { columns, from, where, ... } }
-        // We need the inner AST node, not the wrapper.
-        const innerStmt = cte.stmt?.ast ?? cte.stmt;
-        const cteStmts = flattenAstToNodeMap(innerStmt);
-        
-        // Add the CTE Group node
-        nodes[`node_cte_${name}`] = { sql: `CTE: ${name}`, isGroup: true, label: name };
-        
-        // Add all sub-nodes and assign them to this group
-        for (const [key, val] of Object.entries(cteStmts)) {
-          const valueObj = typeof val === "string" ? { sql: val } : val;
-          nodes[`${key}_cte_${name}`] = { ...valueObj, parentId: `node_cte_${name}` };
+      // Two-pass CTE processing: create ALL group (parent) nodes FIRST
+      // so dagre and React Flow never encounter a child referencing a
+      // parent that hasn't been registered yet.
+
+      // Pass 1 — register group container nodes
+      const cteChildEntries: Array<{ groupId: string; children: Record<string, any> }> = [];
+      for (let i = 0; i < target.with.length; i++) {
+        const cte: any = target.with[i];
+        const name: string = cte.name?.value || `cte_${i}`;
+        const groupId = `node_cte_${name}`;
+
+        // Group node MUST exist before any child references it.
+        nodes[groupId] = { sql: `CTE: ${name}`, isGroup: true, label: name };
+
+        // Parse CTE body
+        try {
+          const innerStmt = cte.stmt?.ast ?? cte.stmt;
+          const cteStmts = flattenAstToNodeMap(innerStmt);
+          cteChildEntries.push({ groupId, children: cteStmts });
+        } catch {
+          // Individual CTE body failed — group still exists, just empty.
+          cteChildEntries.push({ groupId, children: {} });
         }
-      });
+      }
+
+      // Pass 2 — attach children to their groups
+      for (const { groupId, children } of cteChildEntries) {
+        for (const [key, val] of Object.entries(children)) {
+          const valueObj = typeof val === "string" ? { sql: val } : val;
+          nodes[`${key}_${groupId.replace('node_', '')}`] = { ...valueObj, parentId: groupId };
+        }
+      }
     }
   } catch {
     // Ignore CTE parsing errors and proceed

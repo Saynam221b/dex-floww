@@ -25,8 +25,43 @@ export async function POST(request: Request) {
 
     const dbType = dialectMap[dialect] || "mysql";
     const parser = new Parser();
-    const ast = parser.astify(sql, { database: dbType });
-    const nodeMap = flattenAstToNodeMap(ast as unknown as AstNode);
+
+    let ast;
+    try {
+      ast = parser.astify(sql, { database: dbType });
+    } catch (parseErr: unknown) {
+      // Parser itself choked — surface as syntax error
+      const msg = parseErr instanceof Error ? parseErr.message : "Failed to parse SQL.";
+      const lineMatch = msg.match(/line\s+(\d+)/i);
+      const colMatch = msg.match(/col(?:umn)?\s+(\d+)/i);
+      return Response.json(
+        {
+          error: "Invalid SQL syntax.",
+          details: msg,
+          line: lineMatch ? parseInt(lineMatch[1], 10) : null,
+          column: colMatch ? parseInt(colMatch[1], 10) : null,
+        },
+        { status: 400 }
+      );
+    }
+
+    let nodeMap;
+    try {
+      nodeMap = flattenAstToNodeMap(ast as unknown as AstNode);
+    } catch (mapErr: unknown) {
+      // AST parsed OK but our mapper couldn't handle the structure
+      // (e.g. deeply nested CTEs, recursive CTEs, dialect-specific nodes)
+      console.error("[D3xTRverse] AST mapping failed", mapErr);
+      return Response.json(
+        {
+          error: "Unsupported complex syntax in CTE",
+          details: mapErr instanceof Error ? mapErr.message : "The AST mapper could not process this query structure.",
+          line: null,
+          column: null,
+        },
+        { status: 400 }
+      );
+    }
 
     return Response.json({ ast, nodeMap });
   } catch (err: unknown) {
