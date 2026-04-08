@@ -254,7 +254,8 @@ function transformToGraph(
   explanations: Explanations,
   onExpandToggle: (nodeId: string, expanded: boolean) => void,
   onHeightReport: (nodeId: string, height: number) => void,
-  nodeHeights?: Map<string, number>
+  nodeHeights?: Map<string, number>,
+  isMobileSafari?: boolean
 ): { nodes: Node[]; edges: Edge[] } {
   const entries = Object.entries(nodeMap);
 
@@ -272,13 +273,15 @@ function transformToGraph(
     const label = isObj ? val.label : undefined;
 
     if (isGroup) {
-      nodes.push({
-        id: key,
-        type: "cteGroup",
-        data: { label },
-        position: { x: 0, y: 0 },
-        style: { zIndex: -1 },
-      });
+      if (!isMobileSafari) {
+        nodes.push({
+          id: key,
+          type: "cteGroup",
+          data: { label },
+          position: { x: 0, y: 0 },
+          style: { zIndex: -1 },
+        });
+      }
       continue;
     }
 
@@ -303,8 +306,13 @@ function transformToGraph(
       const id = item.key;
       currentLayerIds.push(id);
 
+      const parentNode = item.parentId ? nodeMap[item.parentId] : null;
+      const parentLabel = (typeof parentNode === "object" && parentNode !== null) ? (parentNode as any).label : null;
+
       const nodeData: SqlNodeData = {
-        label: LAYER_LABELS[layerType] ?? layerType.toUpperCase(),
+        label: isMobileSafari && parentLabel 
+          ? `[${parentLabel}] ${LAYER_LABELS[layerType] ?? layerType.toUpperCase()}`
+          : (LAYER_LABELS[layerType] ?? layerType.toUpperCase()),
         sql: item.sql,
         explanation: explanations[item.key] || "Processing…",
         nodeType: layerType,
@@ -317,8 +325,8 @@ function transformToGraph(
       nodes.push({
         id,
         type: "sqlNode",
-        parentId: item.parentId,
-        extent: item.parentId ? "parent" : undefined,
+        parentId: isMobileSafari ? undefined : item.parentId,
+        extent: (item.parentId && !isMobileSafari) ? "parent" : undefined,
         position: { x: 0, y: 0 },
         data: nodeData as unknown as Record<string, unknown>,
       });
@@ -815,7 +823,9 @@ function FlowApp() {
           nodeMap,
           initialExplanations,
           handleExpandToggle,
-          handleHeightReport
+          handleHeightReport,
+          undefined,
+          isMobileSafari
         );
 
         setStage("rendering");
@@ -847,7 +857,8 @@ function FlowApp() {
                 explainData.explanations,
                 handleExpandToggle,
                 handleHeightReport,
-                nodeHeightsRef.current
+                nodeHeightsRef.current,
+                isMobileSafari
               );
               setNodes(updatedNodes);
               setEdges(updatedEdges);

@@ -96,7 +96,9 @@ const DEFAULT_CONFIG = {
 function SqlNodeComponent({ data, id }: NodeProps) {
   const d = data as unknown as SqlNodeData;
   const config = OPERATION_CONFIG[d.operationType] ?? DEFAULT_CONFIG;
-  const Icon = config.icon;
+  const icon = config.icon;
+  const Icon = icon;
+  const isCte = d.label.startsWith("[");
   const updateNodeInternals = useUpdateNodeInternals();
 
   const [expanded, setExpanded] = useState(false);
@@ -197,15 +199,17 @@ function SqlNodeComponent({ data, id }: NodeProps) {
         minWidth: 290,
         maxWidth: 360,
         borderRadius: 16,
-        border: `1.5px solid ${config.accent}44`,
-        background: "rgba(14, 16, 24, 0.92)",
+        border: isCte ? `1.5px dashed ${config.accent}88` : `1.5px solid ${config.accent}44`,
+        background: isCte ? "rgba(20, 24, 48, 0.95)" : "rgba(14, 16, 24, 0.92)",
         backdropFilter: "blur(20px) saturate(1.5)",
         WebkitBackdropFilter: "blur(20px) saturate(1.5)",
-        boxShadow: `
-          0 0 28px ${config.glow},
-          0 0 0 1px rgba(255,255,255,0.03),
-          inset 0 1px 0 rgba(255,255,255,0.05)
-        `,
+        boxShadow: isCte 
+          ? `0 0 32px ${config.glow}, 0 0 0 1px ${config.accent}20`
+          : `
+            0 0 28px ${config.glow},
+            0 0 0 1px rgba(255,255,255,0.03),
+            inset 0 1px 0 rgba(255,255,255,0.05)
+          `,
         padding: "14px 16px 12px",
         color: "#e8eaf0",
         fontFamily: "var(--font-sans), system-ui, sans-serif",
